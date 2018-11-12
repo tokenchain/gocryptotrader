@@ -1,8 +1,12 @@
 package exchange
 
 import (
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,13 +21,111 @@ import (
 
 const (
 	warningBase64DecryptSecretKeyFailed = "WARNING -- Exchange %s unable to base64 decode secret key.. Disabling Authenticated API support."
-
 	// WarningAuthenticatedRequestWithoutCredentialsSet error message for authenticated request without credentials set
 	WarningAuthenticatedRequestWithoutCredentialsSet = "WARNING -- Exchange %s authenticated HTTP request called but not supported due to unset/default API keys."
 	// ErrExchangeNotFound is a constant for an error message
 	ErrExchangeNotFound = "Exchange not found in dataset."
 	// DefaultHTTPTimeout is the default HTTP/HTTPS Timeout for exchange requests
 	DefaultHTTPTimeout = time.Second * 15
+)
+
+// FeeType custom type for calculating fees based on method
+type FeeType string
+
+// InternationalBankTransactionType custom type for calculating fees based on fiat transaction types
+type InternationalBankTransactionType string
+
+// Const declarations for fee types
+const (
+	BankFee                        FeeType = "bankFee"
+	InternationalBankDepositFee    FeeType = "internationalBankDepositFee"
+	InternationalBankWithdrawalFee FeeType = "internationalBankWithdrawalFee"
+	CryptocurrencyTradeFee         FeeType = "cryptocurrencyTradeFee"
+	CyptocurrencyDepositFee        FeeType = "cyptocurrencyDepositFee"
+	CryptocurrencyWithdrawalFee    FeeType = "cryptocurrencyWithdrawalFee"
+)
+
+// Const declarations for international transaction types
+const (
+	WireTransfer    InternationalBankTransactionType = "wireTransfer"
+	PerfectMoney    InternationalBankTransactionType = "perfectMoney"
+	Neteller        InternationalBankTransactionType = "neteller"
+	AdvCash         InternationalBankTransactionType = "advCash"
+	Payeer          InternationalBankTransactionType = "payeer"
+	Skrill          InternationalBankTransactionType = "skrill"
+	Simplex         InternationalBankTransactionType = "simplex"
+	SEPA            InternationalBankTransactionType = "sepa"
+	Swift           InternationalBankTransactionType = "swift"
+	RapidTransfer   InternationalBankTransactionType = "rapidTransfer"
+	MisterTangoSEPA InternationalBankTransactionType = "misterTangoSepa"
+	Qiwi            InternationalBankTransactionType = "qiwi"
+	VisaMastercard  InternationalBankTransactionType = "visaMastercard"
+	WebMoney        InternationalBankTransactionType = "webMoney"
+	Capitalist      InternationalBankTransactionType = "capitalist"
+	WesternUnion    InternationalBankTransactionType = "westernUnion"
+	MoneyGram       InternationalBankTransactionType = "moneyGram"
+	Contact         InternationalBankTransactionType = "contact"
+)
+
+// FeeBuilder is the type which holds all parameters required to calculate a fee for an exchange
+type FeeBuilder struct {
+	FeeType FeeType
+	//Used for calculating crypto trading fees, deposits & withdrawals
+	FirstCurrency  string
+	SecondCurrency string
+	Delimiter      string
+	IsMaker        bool
+	// Fiat currency used for bank deposits & withdrawals
+	CurrencyItem        string
+	BankTransactionType InternationalBankTransactionType
+	// Used to multiply for fee calculations
+	PurchasePrice float64
+	Amount        float64
+}
+
+// Definitions for each type of withdrawal method for a given exchange
+const (
+	// No withdraw
+	NoAPIWithdrawalMethods                  uint32 = 0
+	NoAPIWithdrawalMethodsText              string = "NONE, WEBSITE ONLY"
+	AutoWithdrawCrypto                      uint32 = (1 << 0)
+	AutoWithdrawCryptoWithAPIPermission     uint32 = (1 << 1)
+	AutoWithdrawCryptoWithSetup             uint32 = (1 << 2)
+	AutoWithdrawCryptoText                  string = "AUTO WITHDRAW CRYPTO"
+	AutoWithdrawCryptoWithAPIPermissionText string = "AUTO WITHDRAW CRYPTO WITH API PERMISSION"
+	AutoWithdrawCryptoWithSetupText         string = "AUTO WITHDRAW CRYPTO WITH SETUP"
+	WithdrawCryptoWith2FA                   uint32 = (1 << 3)
+	WithdrawCryptoWithSMS                   uint32 = (1 << 4)
+	WithdrawCryptoWithEmail                 uint32 = (1 << 5)
+	WithdrawCryptoWithWebsiteApproval       uint32 = (1 << 6)
+	WithdrawCryptoWithAPIPermission         uint32 = (1 << 7)
+	WithdrawCryptoWith2FAText               string = "WITHDRAW CRYPTO WITH 2FA"
+	WithdrawCryptoWithSMSText               string = "WITHDRAW CRYPTO WITH SMS"
+	WithdrawCryptoWithEmailText             string = "WITHDRAW CRYPTO WITH EMAIL"
+	WithdrawCryptoWithWebsiteApprovalText   string = "WITHDRAW CRYPTO WITH WEBSITE APPROVAL"
+	WithdrawCryptoWithAPIPermissionText     string = "WITHDRAW CRYPTO WITH API PERMISSION"
+	AutoWithdrawFiat                        uint32 = (1 << 8)
+	AutoWithdrawFiatWithAPIPermission       uint32 = (1 << 9)
+	AutoWithdrawFiatWithSetup               uint32 = (1 << 10)
+	AutoWithdrawFiatText                    string = "AUTO WITHDRAW FIAT"
+	AutoWithdrawFiatWithAPIPermissionText   string = "AUTO WITHDRAW FIAT WITH API PERMISSION"
+	AutoWithdrawFiatWithSetupText           string = "AUTO WITHDRAW FIAT WITH SETUP"
+	WithdrawFiatWith2FA                     uint32 = (1 << 11)
+	WithdrawFiatWithSMS                     uint32 = (1 << 12)
+	WithdrawFiatWithEmail                   uint32 = (1 << 13)
+	WithdrawFiatWithWebsiteApproval         uint32 = (1 << 14)
+	WithdrawFiatWithAPIPermission           uint32 = (1 << 15)
+	WithdrawFiatWith2FAText                 string = "WITHDRAW FIAT WITH 2FA"
+	WithdrawFiatWithSMSText                 string = "WITHDRAW FIAT WITH SMS"
+	WithdrawFiatWithEmailText               string = "WITHDRAW FIAT WITH EMAIL"
+	WithdrawFiatWithWebsiteApprovalText     string = "WITHDRAW FIAT WITH WEBSITE APPROVAL"
+	WithdrawFiatWithAPIPermissionText       string = "WITHDRAW FIAT WITH API PERMISSION"
+	WithdrawCryptoViaWebsiteOnly            uint32 = (1 << 16)
+	WithdrawFiatViaWebsiteOnly              uint32 = (1 << 17)
+	WithdrawCryptoViaWebsiteOnlyText        string = "WITHDRAW CRYPTO VIA WEBSITE ONLY"
+	WithdrawFiatViaWebsiteOnlyText          string = "WITHDRAW FIAT VIA WEBSITE ONLY"
+
+	UnknownWithdrawalTypeText string = "UNKNOWN"
 )
 
 // AccountInfo is a Generic type to hold each exchange's holdings in
@@ -88,9 +190,10 @@ type Base struct {
 	Name                                       string
 	Enabled                                    bool
 	Verbose                                    bool
-	Websocket                                  bool
 	RESTPollingDelay                           time.Duration
 	AuthenticatedAPISupport                    bool
+	APIWithdrawPermissions                     uint32
+	APIAuthPEMKeySupport                       bool
 	APISecret, APIKey, APIAuthPEMKey, ClientID string
 	Nonce                                      nonce.Nonce
 	TakerFee, MakerFee, Fee                    float64
@@ -105,8 +208,12 @@ type Base struct {
 	HTTPUserAgent                              string
 	WebsocketURL                               string
 	APIUrl                                     string
+	APIUrlDefault                              string
+	APIUrlSecondary                            string
+	APIUrlSecondaryDefault                     string
 	RequestCurrencyPairFormat                  config.CurrencyPairFormatConfig
 	ConfigCurrencyPairFormat                   config.CurrencyPairFormatConfig
+	Websocket                                  *Websocket
 	*request.Requester
 }
 
@@ -125,6 +232,7 @@ type IBotExchange interface {
 	UpdateOrderbook(currency pair.CurrencyPair, assetType string) (orderbook.Base, error)
 	GetEnabledCurrencies() []pair.CurrencyPair
 	GetAvailableCurrencies() []pair.CurrencyPair
+	GetAssetTypes() []string
 	GetExchangeAccountInfo() (AccountInfo, error)
 	GetAuthenticatedAPISupport() bool
 	SetCurrencies(pairs []pair.CurrencyPair, enabledPairs bool) error
@@ -132,6 +240,10 @@ type IBotExchange interface {
 	SupportsAutoPairUpdates() bool
 	GetLastPairsUpdateTime() int64
 	SupportsRESTTickerBatchUpdates() bool
+
+	GetWithdrawPermissions() uint32
+	FormatWithdrawPermissions() string
+	SupportsWithdrawPermissions(permissions uint32) bool
 
 	GetExchangeFundTransferHistory() ([]FundHistory, error)
 	SubmitExchangeOrder(p pair.CurrencyPair, side OrderSide, orderType OrderType, amount, price float64, clientID string) (int64, error)
@@ -143,6 +255,8 @@ type IBotExchange interface {
 
 	WithdrawCryptoExchangeFunds(address string, cryptocurrency pair.CurrencyItem, amount float64) (string, error)
 	WithdrawFiatExchangeFunds(currency pair.CurrencyItem, amount float64) (string, error)
+
+	GetWebsocket() (*Websocket, error)
 }
 
 // SupportsRESTTickerBatchUpdates returns whether or not the
@@ -155,7 +269,10 @@ func (e *Base) SupportsRESTTickerBatchUpdates() bool {
 // HTTP Client
 func (e *Base) SetHTTPClientTimeout(t time.Duration) {
 	if e.Requester == nil {
-		e.Requester = request.New(e.Name, request.NewRateLimit(time.Second, 0), request.NewRateLimit(time.Second, 0), new(http.Client))
+		e.Requester = request.New(e.Name,
+			request.NewRateLimit(time.Second, 0),
+			request.NewRateLimit(time.Second, 0),
+			new(http.Client))
 	}
 	e.Requester.HTTPClient.Timeout = t
 }
@@ -163,7 +280,10 @@ func (e *Base) SetHTTPClientTimeout(t time.Duration) {
 // SetHTTPClient sets exchanges HTTP client
 func (e *Base) SetHTTPClient(h *http.Client) {
 	if e.Requester == nil {
-		e.Requester = request.New(e.Name, request.NewRateLimit(time.Second, 0), request.NewRateLimit(time.Second, 0), new(http.Client))
+		e.Requester = request.New(e.Name,
+			request.NewRateLimit(time.Second, 0),
+			request.NewRateLimit(time.Second, 0),
+			new(http.Client))
 	}
 	e.Requester.HTTPClient = h
 }
@@ -171,7 +291,10 @@ func (e *Base) SetHTTPClient(h *http.Client) {
 // GetHTTPClient gets the exchanges HTTP client
 func (e *Base) GetHTTPClient() *http.Client {
 	if e.Requester == nil {
-		e.Requester = request.New(e.Name, request.NewRateLimit(time.Second, 0), request.NewRateLimit(time.Second, 0), new(http.Client))
+		e.Requester = request.New(e.Name,
+			request.NewRateLimit(time.Second, 0),
+			request.NewRateLimit(time.Second, 0),
+			new(http.Client))
 	}
 	return e.Requester.HTTPClient
 }
@@ -179,7 +302,10 @@ func (e *Base) GetHTTPClient() *http.Client {
 // SetHTTPClientUserAgent sets the exchanges HTTP user agent
 func (e *Base) SetHTTPClientUserAgent(ua string) {
 	if e.Requester == nil {
-		e.Requester = request.New(e.Name, request.NewRateLimit(time.Second, 0), request.NewRateLimit(time.Second, 0), new(http.Client))
+		e.Requester = request.New(e.Name,
+			request.NewRateLimit(time.Second, 0),
+			request.NewRateLimit(time.Second, 0),
+			new(http.Client))
 	}
 	e.Requester.UserAgent = ua
 	e.HTTPUserAgent = ua
@@ -188,6 +314,31 @@ func (e *Base) SetHTTPClientUserAgent(ua string) {
 // GetHTTPClientUserAgent gets the exchanges HTTP user agent
 func (e *Base) GetHTTPClientUserAgent() string {
 	return e.HTTPUserAgent
+}
+
+// SetClientProxyAddress sets a proxy address for REST and websocket requests
+func (e *Base) SetClientProxyAddress(addr string) error {
+	if addr != "" {
+		proxy, err := url.Parse(addr)
+		if err != nil {
+			return fmt.Errorf("exchange.go - setting proxy address error %s",
+				err)
+		}
+
+		err = e.Requester.SetProxy(proxy)
+		if err != nil {
+			return fmt.Errorf("exchange.go - setting proxy address error %s",
+				err)
+		}
+
+		if e.Websocket != nil {
+			err = e.Websocket.SetProxyAddress(addr)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // SetAutoPairDefaults sets the default values for whether or not the exchange
@@ -246,7 +397,8 @@ func (e *Base) SetAssetTypes() error {
 		exch.AssetTypes = common.JoinStrings(e.AssetTypes, ",")
 		update = true
 	} else {
-		e.AssetTypes = common.SplitStrings(exch.AssetTypes, ",")
+		exch.AssetTypes = common.JoinStrings(e.AssetTypes, ",")
+		update = true
 	}
 
 	if update {
@@ -254,6 +406,11 @@ func (e *Base) SetAssetTypes() error {
 	}
 
 	return nil
+}
+
+// GetAssetTypes returns the available asset types for an individual exchange
+func (e *Base) GetAssetTypes() []string {
+	return e.AssetTypes
 }
 
 // GetExchangeAssetTypes returns the asset types the exchange supports (SPOT,
@@ -469,6 +626,10 @@ func (e *Base) SetAPIKeys(APIKey, APISecret, ClientID string, b64Decode bool) {
 // SetCurrencies sets the exchange currency pairs for either enabledPairs or
 // availablePairs
 func (e *Base) SetCurrencies(pairs []pair.CurrencyPair, enabledPairs bool) error {
+	if len(pairs) == 0 {
+		return fmt.Errorf("%s SetCurrencies error - pairs is empty", e.Name)
+	}
+
 	cfg := config.GetConfig()
 	exchCfg, err := cfg.GetExchangeConfig(e.Name)
 	if err != nil {
@@ -495,6 +656,10 @@ func (e *Base) SetCurrencies(pairs []pair.CurrencyPair, enabledPairs bool) error
 // UpdateCurrencies updates the exchange currency pairs for either enabledPairs or
 // availablePairs
 func (e *Base) UpdateCurrencies(exchangeProducts []string, enabled, force bool) error {
+	if len(exchangeProducts) == 0 {
+		return fmt.Errorf("%s UpdateCurrencies error - exchangeProducts is empty", e.Name)
+	}
+
 	exchangeProducts = common.SplitStrings(common.StringToUpper(common.JoinStrings(exchangeProducts, ",")), ",")
 	var products []string
 
@@ -623,4 +788,107 @@ func OrderSideBuy() OrderSide {
 // OrderSideSell returns an OrderSide Sell order
 func OrderSideSell() OrderSide {
 	return "Sell"
+}
+
+// SetAPIURL sets configuration API URL for an exchange
+func (e *Base) SetAPIURL(ec config.ExchangeConfig) error {
+	if ec.APIURL == "" || ec.APIURLSecondary == "" {
+		return errors.New("SetAPIURL error variable zero value")
+	}
+	if ec.APIURL != config.APIURLNonDefaultMessage {
+		e.APIUrl = ec.APIURL
+	}
+	if ec.APIURLSecondary != config.APIURLNonDefaultMessage {
+		e.APIUrlSecondary = ec.APIURLSecondary
+	}
+	return nil
+}
+
+// GetAPIURL returns the set API URL
+func (e *Base) GetAPIURL() string {
+	return e.APIUrl
+}
+
+// GetSecondaryAPIURL returns the set Secondary API URL
+func (e *Base) GetSecondaryAPIURL() string {
+	return e.APIUrlSecondary
+}
+
+// GetAPIURLDefault returns exchange default URL
+func (e *Base) GetAPIURLDefault() string {
+	return e.APIUrlDefault
+}
+
+// GetAPIURLSecondaryDefault returns exchange default secondary URL
+func (e *Base) GetAPIURLSecondaryDefault() string {
+	return e.APIUrlSecondaryDefault
+}
+
+// GetWithdrawPermissions passes through the exchange's withdraw permissions
+func (e *Base) GetWithdrawPermissions() uint32 {
+	return e.APIWithdrawPermissions
+}
+
+// SupportsWithdrawPermissions compares the supplied permissions with the exchange's to verify they're supported
+func (e *Base) SupportsWithdrawPermissions(permissions uint32) bool {
+	exchangePermissions := e.GetWithdrawPermissions()
+	if permissions&exchangePermissions == permissions {
+		return true
+	}
+	return false
+}
+
+// FormatWithdrawPermissions will return each of the exchange's compatible withdrawal methods in readable form
+func (e *Base) FormatWithdrawPermissions() string {
+	services := []string{}
+	for i := 0; i < 32; i++ {
+		var check uint32 = 1 << uint32(i)
+		if e.GetWithdrawPermissions()&check != 0 {
+			switch check {
+			case AutoWithdrawCrypto:
+				services = append(services, AutoWithdrawCryptoText)
+			case AutoWithdrawCryptoWithAPIPermission:
+				services = append(services, AutoWithdrawCryptoWithAPIPermissionText)
+			case AutoWithdrawCryptoWithSetup:
+				services = append(services, AutoWithdrawCryptoWithSetupText)
+			case WithdrawCryptoWith2FA:
+				services = append(services, WithdrawCryptoWith2FAText)
+			case WithdrawCryptoWithSMS:
+				services = append(services, WithdrawCryptoWithSMSText)
+			case WithdrawCryptoWithEmail:
+				services = append(services, WithdrawCryptoWithEmailText)
+			case WithdrawCryptoWithWebsiteApproval:
+				services = append(services, WithdrawCryptoWithWebsiteApprovalText)
+			case WithdrawCryptoWithAPIPermission:
+				services = append(services, WithdrawCryptoWithAPIPermissionText)
+			case AutoWithdrawFiat:
+				services = append(services, AutoWithdrawFiatText)
+			case AutoWithdrawFiatWithAPIPermission:
+				services = append(services, AutoWithdrawFiatWithAPIPermissionText)
+			case AutoWithdrawFiatWithSetup:
+				services = append(services, AutoWithdrawFiatWithSetupText)
+			case WithdrawFiatWith2FA:
+				services = append(services, WithdrawFiatWith2FAText)
+			case WithdrawFiatWithSMS:
+				services = append(services, WithdrawFiatWithSMSText)
+			case WithdrawFiatWithEmail:
+				services = append(services, WithdrawFiatWithEmailText)
+			case WithdrawFiatWithWebsiteApproval:
+				services = append(services, WithdrawFiatWithWebsiteApprovalText)
+			case WithdrawFiatWithAPIPermission:
+				services = append(services, WithdrawFiatWithAPIPermissionText)
+			case WithdrawCryptoViaWebsiteOnly:
+				services = append(services, WithdrawCryptoViaWebsiteOnlyText)
+			case WithdrawFiatViaWebsiteOnly:
+				services = append(services, WithdrawFiatViaWebsiteOnlyText)
+			default:
+				services = append(services, fmt.Sprintf("%s[%v]", UnknownWithdrawalTypeText, check))
+			}
+		}
+	}
+	if len(services) > 0 {
+		return strings.Join(services, " & ")
+	}
+
+	return NoAPIWithdrawalMethodsText
 }

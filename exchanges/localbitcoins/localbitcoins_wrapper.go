@@ -69,7 +69,7 @@ func (l *LocalBitcoins) GetOrderbookEx(p pair.CurrencyPair, assetType string) (o
 // UpdateOrderbook updates and returns the orderbook for a currency pair
 func (l *LocalBitcoins) UpdateOrderbook(p pair.CurrencyPair, assetType string) (orderbook.Base, error) {
 	var orderBook orderbook.Base
-	orderbookNew, err := l.GetOrderbook(p.GetSecondCurrency().String())
+	orderbookNew, err := l.GetOrderbook(p.SecondCurrency.String())
 	if err != nil {
 		return orderBook, err
 	}
@@ -167,4 +167,19 @@ func (l *LocalBitcoins) WithdrawFiatExchangeFunds(currency pair.CurrencyItem, am
 // withdrawal is submitted
 func (l *LocalBitcoins) WithdrawFiatExchangeFundsToInternationalBank(currency pair.CurrencyItem, amount float64) (string, error) {
 	return "", errors.New("not yet implemented")
+}
+
+// GetWebsocket returns a pointer to the exchange websocket
+func (l *LocalBitcoins) GetWebsocket() (*exchange.Websocket, error) {
+	return nil, errors.New("not yet implemented")
+}
+
+// GetFeeByType returns an estimate of fee based on type of transaction
+func (l *LocalBitcoins) GetFeeByType(feeBuilder exchange.FeeBuilder) (float64, error) {
+	return l.GetFee(feeBuilder)
+}
+
+// GetWithdrawCapabilities returns the types of withdrawal methods permitted by the exchange
+func (l *LocalBitcoins) GetWithdrawCapabilities() uint32 {
+	return l.GetWithdrawPermissions()
 }

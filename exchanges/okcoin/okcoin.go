@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/thrasher-/gocryptotrader/currency/symbol"
+
 	"github.com/gorilla/websocket"
 	"github.com/thrasher-/gocryptotrader/common"
 	"github.com/thrasher-/gocryptotrader/config"
@@ -19,7 +21,7 @@ import (
 
 const (
 	okcoinAPIURL                = "https://www.okcoin.com/api/v1/"
-	okcoinAPIURLChina           = "https://www.okcoin.cn/api/v1/"
+	okcoinAPIURLChina           = "https://www.okcoin.com/api/v1/"
 	okcoinAPIVersion            = "1"
 	okcoinWebsocketURL          = "wss://real.okcoin.com:10440/websocket/okcoinapi"
 	okcoinWebsocketURLChina     = "wss://real.okcoin.cn:10440/websocket/okcoinapi"
@@ -72,10 +74,6 @@ const (
 	okcoinUnauthRate = 0
 )
 
-var (
-	okcoinDefaultsSet = false
-)
-
 // OKCoin is the overarching type across this package
 type OKCoin struct {
 	exchange.Base
@@ -99,28 +97,12 @@ func (o *OKCoin) SetDefaults() {
 	o.SetWebsocketErrorDefaults()
 	o.Enabled = false
 	o.Verbose = false
-	o.Websocket = false
 	o.RESTPollingDelay = 10
-	o.FuturesValues = []string{"this_week", "next_week", "quarter"}
 	o.AssetTypes = []string{ticker.Spot}
+	o.APIWithdrawPermissions = exchange.AutoWithdrawCrypto | exchange.WithdrawFiatViaWebsiteOnly
 	o.SupportsAutoPairUpdating = false
 	o.SupportsRESTTickerBatching = false
-
-	if okcoinDefaultsSet {
-		o.AssetTypes = append(o.AssetTypes, o.FuturesValues...)
-		o.APIUrl = okcoinAPIURL
-		o.Name = "OKCOIN International"
-		o.WebsocketURL = okcoinWebsocketURL
-		o.setCurrencyPairFormats()
-		o.Requester = request.New(o.Name, request.NewRateLimit(time.Second, okcoinAuthRate), request.NewRateLimit(time.Second, okcoinUnauthRate), common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
-	} else {
-		o.APIUrl = okcoinAPIURLChina
-		o.Name = "OKCOIN China"
-		o.WebsocketURL = okcoinWebsocketURLChina
-		okcoinDefaultsSet = true
-		o.setCurrencyPairFormats()
-		o.Requester = request.New(o.Name, request.NewRateLimit(time.Second, okcoinAuthRate), request.NewRateLimit(time.Second, okcoinUnauthRate), common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
-	}
+	o.WebsocketInit()
 }
 
 // Setup sets exchange configuration parameters
@@ -128,6 +110,37 @@ func (o *OKCoin) Setup(exch config.ExchangeConfig) {
 	if !exch.Enabled {
 		o.SetEnabled(false)
 	} else {
+		if exch.Name == "OKCOIN International" {
+			o.AssetTypes = append(o.AssetTypes, o.FuturesValues...)
+			o.APIUrlDefault = okcoinAPIURL
+			o.APIUrl = o.APIUrlDefault
+			o.Name = "OKCOIN International"
+			o.WebsocketURL = okcoinWebsocketURL
+			o.setCurrencyPairFormats()
+			o.Requester = request.New(o.Name,
+				request.NewRateLimit(time.Second, okcoinAuthRate),
+				request.NewRateLimit(time.Second, okcoinUnauthRate),
+				common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
+			o.ConfigCurrencyPairFormat.Delimiter = "_"
+			o.ConfigCurrencyPairFormat.Uppercase = true
+			o.RequestCurrencyPairFormat.Uppercase = false
+			o.RequestCurrencyPairFormat.Delimiter = "_"
+		} else {
+			o.APIUrlDefault = okcoinAPIURLChina
+			o.APIUrl = o.APIUrlDefault
+			o.Name = "OKCOIN China"
+			o.WebsocketURL = okcoinWebsocketURLChina
+			o.setCurrencyPairFormats()
+			o.Requester = request.New(o.Name,
+				request.NewRateLimit(time.Second, okcoinAuthRate),
+				request.NewRateLimit(time.Second, okcoinUnauthRate),
+				common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
+			o.ConfigCurrencyPairFormat.Delimiter = ""
+			o.ConfigCurrencyPairFormat.Uppercase = true
+			o.RequestCurrencyPairFormat.Uppercase = false
+			o.RequestCurrencyPairFormat.Delimiter = ""
+		}
+
 		o.Enabled = true
 		o.AuthenticatedAPISupport = exch.AuthenticatedAPISupport
 		o.SetAPIKeys(exch.APIKey, exch.APISecret, "", false)
@@ -135,7 +148,7 @@ func (o *OKCoin) Setup(exch config.ExchangeConfig) {
 		o.SetHTTPClientUserAgent(exch.HTTPUserAgent)
 		o.RESTPollingDelay = exch.RESTPollingDelay
 		o.Verbose = exch.Verbose
-		o.Websocket = exch.Websocket
+		o.Websocket.SetEnabled(exch.Websocket)
 		o.BaseCurrencies = common.SplitStrings(exch.BaseCurrencies, ",")
 		o.AvailablePairs = common.SplitStrings(exch.AvailablePairs, ",")
 		o.EnabledPairs = common.SplitStrings(exch.EnabledPairs, ",")
@@ -151,19 +164,23 @@ func (o *OKCoin) Setup(exch config.ExchangeConfig) {
 		if err != nil {
 			log.Fatal(err)
 		}
-	}
-}
-
-// GetFee returns current fees for the exchange
-func (o *OKCoin) GetFee(maker bool) float64 {
-	if o.APIUrl == okcoinAPIURL {
-		if maker {
-			return o.MakerFee
+		err = o.SetAPIURL(exch)
+		if err != nil {
+			log.Fatal(err)
 		}
-		return o.TakerFee
+		err = o.SetClientProxyAddress(exch.ProxyAddress)
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = o.WebsocketSetup(o.WsConnect,
+			exch.Name,
+			exch.Websocket,
+			okcoinWebsocketURL,
+			o.WebsocketURL)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
-	// Chinese exchange does not have any trading fees
-	return 0
 }
 
 // GetTicker returns the current ticker
@@ -1000,4 +1017,47 @@ func (o *OKCoin) SetErrorDefaults() {
 		"20027": "No transaction record",
 		"20028": "No such contract",
 	}
+}
+
+// GetFee returns an estimate of fee based on type of transaction
+func (o *OKCoin) GetFee(feeBuilder exchange.FeeBuilder) (float64, error) {
+	var fee float64
+	switch feeBuilder.FeeType {
+	case exchange.CryptocurrencyTradeFee:
+		fee = calculateTradingFee(feeBuilder.PurchasePrice, feeBuilder.Amount, feeBuilder.IsMaker)
+	case exchange.InternationalBankWithdrawalFee:
+		fee = calculateInternationalBankWithdrawalFee(feeBuilder.CurrencyItem, feeBuilder.PurchasePrice, feeBuilder.Amount)
+	case exchange.CryptocurrencyWithdrawalFee:
+		fee = getWithdrawalFee(feeBuilder.FirstCurrency)
+	}
+	if fee < 0 {
+		fee = 0
+	}
+
+	return fee, nil
+}
+
+func calculateTradingFee(purchasePrice, amount float64, isMaker bool) (fee float64) {
+	// TODO volume based fees
+	if isMaker {
+		fee = 0.0005
+	} else {
+		fee = 0.0015
+	}
+	return fee * amount * purchasePrice
+}
+
+func calculateInternationalBankWithdrawalFee(currency string, purchasePrice, amount float64) (fee float64) {
+	if currency == symbol.USD {
+		if purchasePrice*amount*0.001 < 15 {
+			fee = 15
+		} else {
+			fee = purchasePrice * amount * 0.001
+		}
+	}
+	return fee
+}
+
+func getWithdrawalFee(currency string) float64 {
+	return WithdrawalFees[currency]
 }

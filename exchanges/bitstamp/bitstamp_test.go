@@ -5,6 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/thrasher-/gocryptotrader/currency/symbol"
+	"github.com/thrasher-/gocryptotrader/exchanges"
+
 	"github.com/thrasher-/gocryptotrader/config"
 )
 
@@ -29,7 +32,7 @@ func TestSetDefaults(t *testing.T) {
 	if b.Verbose != false {
 		t.Error("Test Failed - SetDefaults() error")
 	}
-	if b.Websocket != false {
+	if b.Websocket.IsEnabled() != false {
 		t.Error("Test Failed - SetDefaults() error")
 	}
 	if b.RESTPollingDelay != 10 {
@@ -47,29 +50,124 @@ func TestSetup(t *testing.T) {
 	b.Setup(bConfig)
 
 	if !b.IsEnabled() || b.AuthenticatedAPISupport || b.RESTPollingDelay != time.Duration(10) ||
-		b.Verbose || b.Websocket || len(b.BaseCurrencies) < 1 ||
+		b.Verbose || b.Websocket.IsEnabled() || len(b.BaseCurrencies) < 1 ||
 		len(b.AvailablePairs) < 1 || len(b.EnabledPairs) < 1 {
 		t.Error("Test Failed - Bitstamp Setup values not set correctly")
 	}
 }
 
+func setFeeBuilder() exchange.FeeBuilder {
+	return exchange.FeeBuilder{
+		Amount:         1,
+		Delimiter:      "",
+		FeeType:        exchange.CryptocurrencyTradeFee,
+		FirstCurrency:  symbol.BTC,
+		SecondCurrency: symbol.LTC,
+		IsMaker:        false,
+		PurchasePrice:  1,
+	}
+}
+
 func TestGetFee(t *testing.T) {
-	t.Parallel()
-	if resp := b.GetFee("BTCUSD"); resp != 0 {
+	b.SetDefaults()
+	TestSetup(t)
+
+	var feeBuilder = setFeeBuilder()
+
+	// CryptocurrencyTradeFee Basic
+	if resp, err := b.GetFee(feeBuilder); resp != float64(0) || err != nil {
+		t.Error(err)
+		t.Errorf("Test Failed - GetFee() error. Expected: %f, Recieved: %f", float64(0), resp)
+	}
+
+	// CryptocurrencyTradeFee High quantity
+	feeBuilder = setFeeBuilder()
+	feeBuilder.Amount = 1000
+	feeBuilder.PurchasePrice = 1000
+	if resp, err := b.GetFee(feeBuilder); resp != float64(0) || err != nil {
+		t.Errorf("Test Failed - GetFee() error. Expected: %f, Recieved: %f", float64(0), resp)
+		t.Error(err)
+	}
+
+	// CryptocurrencyTradeFee IsMaker
+	feeBuilder = setFeeBuilder()
+	feeBuilder.IsMaker = true
+	if resp, err := b.GetFee(feeBuilder); resp != float64(0) || err != nil {
+		t.Errorf("Test Failed - GetFee() error. Expected: %f, Recieved: %f", float64(0), resp)
+		t.Error(err)
+	}
+
+	// CryptocurrencyTradeFee Negative purchase price
+	feeBuilder = setFeeBuilder()
+	feeBuilder.PurchasePrice = -1000
+	if resp, err := b.GetFee(feeBuilder); resp != float64(0) || err != nil {
+		t.Errorf("Test Failed - GetFee() error. Expected: %f, Recieved: %f", float64(0), resp)
+		t.Error(err)
+	}
+
+	// CryptocurrencyWithdrawalFee Basic
+	feeBuilder = setFeeBuilder()
+	feeBuilder.FeeType = exchange.CryptocurrencyWithdrawalFee
+	if resp, err := b.GetFee(feeBuilder); resp != float64(0) || err != nil {
+		t.Errorf("Test Failed - GetFee() error. Expected: %f, Recieved: %f", float64(0), resp)
+		t.Error(err)
+	}
+
+	// CyptocurrencyDepositFee Basic
+	feeBuilder = setFeeBuilder()
+	feeBuilder.FeeType = exchange.CyptocurrencyDepositFee
+	if resp, err := b.GetFee(feeBuilder); resp != float64(0) || err != nil {
+		t.Errorf("Test Failed - GetFee() error. Expected: %f, Recieved: %f", float64(0), resp)
+		t.Error(err)
+	}
+
+	// InternationalBankDepositFee Basic
+	feeBuilder = setFeeBuilder()
+	feeBuilder.FeeType = exchange.InternationalBankDepositFee
+	feeBuilder.CurrencyItem = symbol.HKD
+	if resp, err := b.GetFee(feeBuilder); resp != float64(7.5) || err != nil {
+		t.Errorf("Test Failed - GetFee() error. Expected: %f, Recieved: %f", float64(7.5), resp)
+		t.Error(err)
+	}
+
+	// InternationalBankWithdrawalFee Basic
+	feeBuilder = setFeeBuilder()
+	feeBuilder.FeeType = exchange.InternationalBankWithdrawalFee
+	feeBuilder.CurrencyItem = symbol.HKD
+	if resp, err := b.GetFee(feeBuilder); resp != float64(15) || err != nil {
+		t.Errorf("Test Failed - GetFee() error. Expected: %f, Recieved: %f", float64(15), resp)
+		t.Error(err)
+	}
+}
+
+func TestCalculateTradingFee(t *testing.T) {
+	b.SetDefaults()
+	TestSetup(t)
+	b.Balance = Balances{}
+	b.Balance.BTCUSDFee = 1
+	b.Balance.BTCEURFee = 0
+
+	if resp := b.CalculateTradingFee(symbol.BTC+symbol.USD, 0, 0); resp != 0 {
 		t.Error("Test Failed - GetFee() error")
 	}
-	if resp := b.GetFee("bla"); resp != 0 {
+	if resp := b.CalculateTradingFee(symbol.BTC+symbol.USD, 2, 2); resp != float64(4) {
+		t.Errorf("Test Failed - GetFee() error. Expected: %f, Recieved: %f", float64(4), resp)
+	}
+	if resp := b.CalculateTradingFee(symbol.BTC+symbol.EUR, 2, 2); resp != float64(0) {
+		t.Errorf("Test Failed - GetFee() error. Expected: %f, Recieved: %f", float64(0), resp)
+	}
+	if resp := b.CalculateTradingFee("bla", 0, 0); resp != 0 {
 		t.Error("Test Failed - GetFee() error")
 	}
 }
 
 func TestGetTicker(t *testing.T) {
 	t.Parallel()
-	_, err := b.GetTicker("BTCUSD", false)
+	_, err := b.GetTicker(symbol.BTC+symbol.USD, false)
 	if err != nil {
 		t.Error("Test Failed - GetTicker() error", err)
 	}
-	_, err = b.GetTicker("BTCUSD", true)
+	_, err = b.GetTicker(symbol.BTC+symbol.USD, true)
 	if err != nil {
 		t.Error("Test Failed - GetTicker() error", err)
 	}
@@ -77,7 +175,7 @@ func TestGetTicker(t *testing.T) {
 
 func TestGetOrderbook(t *testing.T) {
 	t.Parallel()
-	_, err := b.GetOrderbook("BTCUSD")
+	_, err := b.GetOrderbook(symbol.BTC + symbol.USD)
 	if err != nil {
 		t.Error("Test Failed - GetOrderbook() error", err)
 	}
@@ -96,7 +194,7 @@ func TestGetTransactions(t *testing.T) {
 	value := url.Values{}
 	value.Set("time", "hour")
 
-	_, err := b.GetTransactions("BTCUSD", value)
+	_, err := b.GetTransactions(symbol.BTC+symbol.USD, value)
 	if err != nil {
 		t.Error("Test Failed - GetTransactions() error", err)
 	}
@@ -234,5 +332,17 @@ func TestTransferAccountBalance(t *testing.T) {
 	_, err = b.TransferAccountBalance(1, "btc", "", false)
 	if err == nil {
 		t.Error("Test Failed - TransferAccountBalance() error", err)
+	}
+}
+
+func TestFormatWithdrawPermissions(t *testing.T) {
+	// Arrange
+	b.SetDefaults()
+	expectedResult := exchange.AutoWithdrawCryptoText + " & " + exchange.AutoWithdrawFiatText
+	// Act
+	withdrawPermissions := b.FormatWithdrawPermissions()
+	// Assert
+	if withdrawPermissions != expectedResult {
+		t.Errorf("Expected: %s, Recieved: %s", expectedResult, withdrawPermissions)
 	}
 }

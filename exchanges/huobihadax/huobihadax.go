@@ -20,6 +20,7 @@ import (
 const (
 	huobihadaxAPIURL     = "https://api.hadax.com"
 	huobihadaxAPIVersion = "1"
+	huobihadaxAPIName    = "hadax"
 
 	huobihadaxMarketHistoryKline   = "market/history/kline"
 	huobihadaxMarketDetail         = "market/detail"
@@ -63,8 +64,8 @@ func (h *HUOBIHADAX) SetDefaults() {
 	h.Enabled = false
 	h.Fee = 0
 	h.Verbose = false
-	h.Websocket = false
 	h.RESTPollingDelay = 10
+	h.APIWithdrawPermissions = exchange.AutoWithdrawCryptoWithSetup
 	h.RequestCurrencyPairFormat.Delimiter = ""
 	h.RequestCurrencyPairFormat.Uppercase = false
 	h.ConfigCurrencyPairFormat.Delimiter = "-"
@@ -72,7 +73,13 @@ func (h *HUOBIHADAX) SetDefaults() {
 	h.AssetTypes = []string{ticker.Spot}
 	h.SupportsAutoPairUpdating = true
 	h.SupportsRESTTickerBatching = false
-	h.Requester = request.New(h.Name, request.NewRateLimit(time.Second*10, huobihadaxAuthRate), request.NewRateLimit(time.Second*10, huobihadaxUnauthRate), common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
+	h.Requester = request.New(h.Name,
+		request.NewRateLimit(time.Second*10, huobihadaxAuthRate),
+		request.NewRateLimit(time.Second*10, huobihadaxUnauthRate),
+		common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
+	h.APIUrlDefault = huobihadaxAPIURL
+	h.APIUrl = h.APIUrlDefault
+	h.WebsocketInit()
 }
 
 // Setup sets user configuration
@@ -83,12 +90,12 @@ func (h *HUOBIHADAX) Setup(exch config.ExchangeConfig) {
 		h.Enabled = true
 		h.AuthenticatedAPISupport = exch.AuthenticatedAPISupport
 		h.SetAPIKeys(exch.APIKey, exch.APISecret, "", false)
+		h.APIAuthPEMKeySupport = exch.APIAuthPEMKeySupport
 		h.APIAuthPEMKey = exch.APIAuthPEMKey
 		h.SetHTTPClientTimeout(exch.HTTPTimeout)
 		h.SetHTTPClientUserAgent(exch.HTTPUserAgent)
 		h.RESTPollingDelay = exch.RESTPollingDelay
 		h.Verbose = exch.Verbose
-		h.Websocket = exch.Websocket
 		h.BaseCurrencies = common.SplitStrings(exch.BaseCurrencies, ",")
 		h.AvailablePairs = common.SplitStrings(exch.AvailablePairs, ",")
 		h.EnabledPairs = common.SplitStrings(exch.EnabledPairs, ",")
@@ -104,12 +111,15 @@ func (h *HUOBIHADAX) Setup(exch config.ExchangeConfig) {
 		if err != nil {
 			log.Fatal(err)
 		}
+		err = h.SetAPIURL(exch)
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = h.SetClientProxyAddress(exch.ProxyAddress)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
-}
-
-// GetFee returns Huobi fee
-func (h *HUOBIHADAX) GetFee() float64 {
-	return h.Fee
 }
 
 // GetSpotKline returns kline data
@@ -129,7 +139,7 @@ func (h *HUOBIHADAX) GetSpotKline(arg KlinesRequestParams) ([]KlineItem, error) 
 	}
 
 	var result response
-	url := fmt.Sprintf("%s/%s", huobihadaxAPIURL, huobihadaxMarketHistoryKline)
+	url := fmt.Sprintf("%s/%s", h.APIUrl, huobihadaxMarketHistoryKline)
 
 	err := h.SendHTTPRequest(common.EncodeURLValues(url, vals), &result)
 	if result.ErrorMessage != "" {
@@ -149,7 +159,7 @@ func (h *HUOBIHADAX) GetMarketDetailMerged(symbol string) (DetailMerged, error) 
 	}
 
 	var result response
-	url := fmt.Sprintf("%s/%s", huobihadaxAPIURL, huobihadaxMarketDetailMerged)
+	url := fmt.Sprintf("%s/%s", h.APIUrl, huobihadaxMarketDetailMerged)
 
 	err := h.SendHTTPRequest(common.EncodeURLValues(url, vals), &result)
 	if result.ErrorMessage != "" {
@@ -173,7 +183,7 @@ func (h *HUOBIHADAX) GetDepth(symbol, depthType string) (Orderbook, error) {
 	}
 
 	var result response
-	url := fmt.Sprintf("%s/%s", huobihadaxAPIURL, huobihadaxMarketDepth)
+	url := fmt.Sprintf("%s/%s", h.APIUrl, huobihadaxMarketDepth)
 
 	err := h.SendHTTPRequest(common.EncodeURLValues(url, vals), &result)
 	if result.ErrorMessage != "" {
@@ -195,7 +205,7 @@ func (h *HUOBIHADAX) GetTrades(symbol string) ([]Trade, error) {
 	}
 
 	var result response
-	url := fmt.Sprintf("%s/%s", huobihadaxAPIURL, huobihadaxMarketTrade)
+	url := fmt.Sprintf("%s/%s", h.APIUrl, huobihadaxMarketTrade)
 
 	err := h.SendHTTPRequest(common.EncodeURLValues(url, vals), &result)
 	if result.ErrorMessage != "" {
@@ -235,7 +245,7 @@ func (h *HUOBIHADAX) GetTradeHistory(symbol, size string) ([]TradeHistory, error
 	}
 
 	var result response
-	url := fmt.Sprintf("%s/%s", huobihadaxAPIURL, huobihadaxMarketTradeHistory)
+	url := fmt.Sprintf("%s/%s", h.APIUrl, huobihadaxMarketTradeHistory)
 
 	err := h.SendHTTPRequest(common.EncodeURLValues(url, vals), &result)
 	if result.ErrorMessage != "" {
@@ -255,7 +265,7 @@ func (h *HUOBIHADAX) GetMarketDetail(symbol string) (Detail, error) {
 	}
 
 	var result response
-	url := fmt.Sprintf("%s/%s", huobihadaxAPIURL, huobihadaxMarketDetail)
+	url := fmt.Sprintf("%s/%s", h.APIUrl, huobihadaxMarketDetail)
 
 	err := h.SendHTTPRequest(common.EncodeURLValues(url, vals), &result)
 	if result.ErrorMessage != "" {
@@ -272,7 +282,7 @@ func (h *HUOBIHADAX) GetSymbols() ([]Symbol, error) {
 	}
 
 	var result response
-	url := fmt.Sprintf("%s/v%s/%s", huobihadaxAPIURL, huobihadaxAPIVersion, huobihadaxSymbols)
+	url := fmt.Sprintf("%s/v%s/%s/%s", h.APIUrl, huobihadaxAPIVersion, huobihadaxAPIName, huobihadaxSymbols)
 
 	err := h.SendHTTPRequest(url, &result)
 	if result.ErrorMessage != "" {
@@ -289,7 +299,7 @@ func (h *HUOBIHADAX) GetCurrencies() ([]string, error) {
 	}
 
 	var result response
-	url := fmt.Sprintf("%s/v%s/%s", huobihadaxAPIURL, huobihadaxAPIVersion, huobihadaxCurrencies)
+	url := fmt.Sprintf("%s/v%s/%s/%s", h.APIUrl, huobihadaxAPIVersion, huobihadaxAPIName, huobihadaxCurrencies)
 
 	err := h.SendHTTPRequest(url, &result)
 	if result.ErrorMessage != "" {
@@ -306,7 +316,7 @@ func (h *HUOBIHADAX) GetTimestamp() (int64, error) {
 	}
 
 	var result response
-	url := fmt.Sprintf("%s/v%s/%s", huobihadaxAPIURL, huobihadaxAPIVersion, huobihadaxTimestamp)
+	url := fmt.Sprintf("%s/v%s/%s", h.APIUrl, huobihadaxAPIVersion, huobihadaxTimestamp)
 
 	err := h.SendHTTPRequest(url, &result)
 	if result.ErrorMessage != "" {
@@ -339,7 +349,7 @@ func (h *HUOBIHADAX) GetAccountBalance(accountID string) ([]AccountBalanceDetail
 	}
 
 	var result response
-	endpoint := fmt.Sprintf(huobihadaxAccountBalance, accountID)
+	endpoint := fmt.Sprintf("%s/%s", huobihadaxAPIName, fmt.Sprintf(huobihadaxAccountBalance, accountID))
 	err := h.SendAuthenticatedHTTPRequest("GET", endpoint, url.Values{}, &result)
 
 	if result.ErrorMessage != "" {
@@ -380,7 +390,8 @@ func (h *HUOBIHADAX) SpotNewOrder(arg SpotNewOrderRequestParams) (int64, error) 
 	}
 
 	var result response
-	err := h.SendAuthenticatedHTTPPostRequest("POST", huobihadaxOrderPlace, postBodyParams, &result)
+	endpoint := fmt.Sprintf("%s/%s", huobihadaxAPIName, huobihadaxOrderPlace)
+	err := h.SendAuthenticatedHTTPPostRequest("POST", endpoint, postBodyParams, &result)
 
 	if result.ErrorMessage != "" {
 		return 0, errors.New(result.ErrorMessage)
@@ -762,7 +773,7 @@ func (h *HUOBIHADAX) SendAuthenticatedHTTPPostRequest(method, endpoint, postBody
 	hmac := common.GetHMAC(common.HashSHA256, []byte(payload), []byte(h.APISecret))
 	signatureParams.Set("Signature", common.Base64Encode(hmac))
 
-	url := fmt.Sprintf("%s%s", huobihadaxAPIURL, endpoint)
+	url := fmt.Sprintf("%s%s", h.APIUrl, endpoint)
 	url = common.EncodeURLValues(url, signatureParams)
 
 	return h.SendPayload(method, url, headers, bytes.NewBufferString(postBodyValues), result, true, h.Verbose)
@@ -789,8 +800,27 @@ func (h *HUOBIHADAX) SendAuthenticatedHTTPRequest(method, endpoint string, value
 	hmac := common.GetHMAC(common.HashSHA256, []byte(payload), []byte(h.APISecret))
 	values.Set("Signature", common.Base64Encode(hmac))
 
-	url := fmt.Sprintf("%s%s", huobihadaxAPIURL, endpoint)
+	url := fmt.Sprintf("%s%s", h.APIUrl, endpoint)
 	url = common.EncodeURLValues(url, values)
 
 	return h.SendPayload(method, url, headers, bytes.NewBufferString(""), result, true, h.Verbose)
+}
+
+// GetFee returns an estimate of fee based on type of transaction
+func (h *HUOBIHADAX) GetFee(feeBuilder exchange.FeeBuilder) (float64, error) {
+	var fee float64
+	switch feeBuilder.FeeType {
+	case exchange.CryptocurrencyTradeFee:
+		fee = calculateTradingFee(feeBuilder.PurchasePrice, feeBuilder.Amount)
+	}
+	if fee < 0 {
+		fee = 0
+	}
+
+	return fee, nil
+}
+
+func calculateTradingFee(purchasePrice, amount float64) float64 {
+	feePercent := 0.002
+	return feePercent * purchasePrice * amount
 }

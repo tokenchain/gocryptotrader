@@ -16,29 +16,31 @@ import (
 )
 
 const (
-	krakenAPIURL        = "https://api.kraken.com"
-	krakenAPIVersion    = "0"
-	krakenServerTime    = "Time"
-	krakenAssets        = "Assets"
-	krakenAssetPairs    = "AssetPairs"
-	krakenTicker        = "Ticker"
-	krakenOHLC          = "OHLC"
-	krakenDepth         = "Depth"
-	krakenTrades        = "Trades"
-	krakenSpread        = "Spread"
-	krakenBalance       = "Balance"
-	krakenTradeBalance  = "TradeBalance"
-	krakenOpenOrders    = "OpenOrders"
-	krakenClosedOrders  = "ClosedOrders"
-	krakenQueryOrders   = "QueryOrders"
-	krakenTradeHistory  = "TradesHistory"
-	krakenQueryTrades   = "QueryTrades"
-	krakenOpenPositions = "OpenPositions"
-	krakenLedgers       = "Ledgers"
-	krakenQueryLedgers  = "QueryLedgers"
-	krakenTradeVolume   = "TradeVolume"
-	krakenOrderCancel   = "CancelOrder"
-	krakenOrderPlace    = "AddOrder"
+	krakenAPIURL         = "https://api.kraken.com"
+	krakenAPIVersion     = "0"
+	krakenServerTime     = "Time"
+	krakenAssets         = "Assets"
+	krakenAssetPairs     = "AssetPairs"
+	krakenTicker         = "Ticker"
+	krakenOHLC           = "OHLC"
+	krakenDepth          = "Depth"
+	krakenTrades         = "Trades"
+	krakenSpread         = "Spread"
+	krakenBalance        = "Balance"
+	krakenTradeBalance   = "TradeBalance"
+	krakenOpenOrders     = "OpenOrders"
+	krakenClosedOrders   = "ClosedOrders"
+	krakenQueryOrders    = "QueryOrders"
+	krakenTradeHistory   = "TradesHistory"
+	krakenQueryTrades    = "QueryTrades"
+	krakenOpenPositions  = "OpenPositions"
+	krakenLedgers        = "Ledgers"
+	krakenQueryLedgers   = "QueryLedgers"
+	krakenTradeVolume    = "TradeVolume"
+	krakenOrderCancel    = "CancelOrder"
+	krakenOrderPlace     = "AddOrder"
+	krakenWithdrawInfo   = "WithdrawInfo"
+	krakenDepositMethods = "DepositMethods"
 
 	krakenAuthRate   = 0
 	krakenUnauthRate = 0
@@ -48,7 +50,6 @@ const (
 type Kraken struct {
 	exchange.Base
 	CryptoFee, FiatFee float64
-	Ticker             map[string]Ticker
 }
 
 // SetDefaults sets current default settings
@@ -58,9 +59,8 @@ func (k *Kraken) SetDefaults() {
 	k.FiatFee = 0.35
 	k.CryptoFee = 0.10
 	k.Verbose = false
-	k.Websocket = false
 	k.RESTPollingDelay = 10
-	k.Ticker = make(map[string]Ticker)
+	k.APIWithdrawPermissions = exchange.AutoWithdrawCryptoWithSetup | exchange.WithdrawCryptoWith2FA | exchange.AutoWithdrawFiatWithSetup | exchange.WithdrawFiatWith2FA
 	k.RequestCurrencyPairFormat.Delimiter = ""
 	k.RequestCurrencyPairFormat.Uppercase = true
 	k.RequestCurrencyPairFormat.Separator = ","
@@ -69,7 +69,13 @@ func (k *Kraken) SetDefaults() {
 	k.AssetTypes = []string{ticker.Spot}
 	k.SupportsAutoPairUpdating = true
 	k.SupportsRESTTickerBatching = true
-	k.Requester = request.New(k.Name, request.NewRateLimit(time.Second, krakenAuthRate), request.NewRateLimit(time.Second, krakenUnauthRate), common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
+	k.Requester = request.New(k.Name,
+		request.NewRateLimit(time.Second, krakenAuthRate),
+		request.NewRateLimit(time.Second, krakenUnauthRate),
+		common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
+	k.APIUrlDefault = krakenAPIURL
+	k.APIUrl = k.APIUrlDefault
+	k.WebsocketInit()
 }
 
 // Setup sets current exchange configuration
@@ -84,7 +90,6 @@ func (k *Kraken) Setup(exch config.ExchangeConfig) {
 		k.SetHTTPClientUserAgent(exch.HTTPUserAgent)
 		k.RESTPollingDelay = exch.RESTPollingDelay
 		k.Verbose = exch.Verbose
-		k.Websocket = exch.Websocket
 		k.BaseCurrencies = common.SplitStrings(exch.BaseCurrencies, ",")
 		k.AvailablePairs = common.SplitStrings(exch.AvailablePairs, ",")
 		k.EnabledPairs = common.SplitStrings(exch.EnabledPairs, ",")
@@ -100,20 +105,20 @@ func (k *Kraken) Setup(exch config.ExchangeConfig) {
 		if err != nil {
 			log.Fatal(err)
 		}
+		err = k.SetAPIURL(exch)
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = k.SetClientProxyAddress(exch.ProxyAddress)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
-}
-
-// GetFee returns current fee for either crypto or fiat
-func (k *Kraken) GetFee(cryptoTrade bool) float64 {
-	if cryptoTrade {
-		return k.CryptoFee
-	}
-	return k.FiatFee
 }
 
 // GetServerTime returns current server time
 func (k *Kraken) GetServerTime() (TimeResponse, error) {
-	path := fmt.Sprintf("%s/%s/public/%s", krakenAPIURL, krakenAPIVersion, krakenServerTime)
+	path := fmt.Sprintf("%s/%s/public/%s", k.APIUrl, krakenAPIVersion, krakenServerTime)
 
 	var response struct {
 		Error  []string     `json:"error"`
@@ -129,7 +134,7 @@ func (k *Kraken) GetServerTime() (TimeResponse, error) {
 
 // GetAssets returns a full asset list
 func (k *Kraken) GetAssets() (map[string]Asset, error) {
-	path := fmt.Sprintf("%s/%s/public/%s", krakenAPIURL, krakenAPIVersion, krakenAssets)
+	path := fmt.Sprintf("%s/%s/public/%s", k.APIUrl, krakenAPIVersion, krakenAssets)
 
 	var response struct {
 		Error  []string         `json:"error"`
@@ -145,7 +150,7 @@ func (k *Kraken) GetAssets() (map[string]Asset, error) {
 
 // GetAssetPairs returns a full asset pair list
 func (k *Kraken) GetAssetPairs() (map[string]AssetPairs, error) {
-	path := fmt.Sprintf("%s/%s/public/%s", krakenAPIURL, krakenAPIVersion, krakenAssetPairs)
+	path := fmt.Sprintf("%s/%s/public/%s", k.APIUrl, krakenAPIVersion, krakenAssetPairs)
 
 	var response struct {
 		Error  []string              `json:"error"`
@@ -171,7 +176,7 @@ func (k *Kraken) GetTicker(symbol string) (Ticker, error) {
 	}
 
 	resp := Response{}
-	path := fmt.Sprintf("%s/%s/public/%s?%s", krakenAPIURL, krakenAPIVersion, krakenTicker, values.Encode())
+	path := fmt.Sprintf("%s/%s/public/%s?%s", k.APIUrl, krakenAPIVersion, krakenTicker, values.Encode())
 
 	err := k.SendHTTPRequest(path, &resp)
 	if err != nil {
@@ -196,6 +201,48 @@ func (k *Kraken) GetTicker(symbol string) (Ticker, error) {
 	return ticker, nil
 }
 
+// GetTickers supports fetching multiple tickers from Kraken
+// pairList must be in the format pairs separated by commas
+// ("LTCUSD,ETCUSD")
+func (k *Kraken) GetTickers(pairList string) (Tickers, error) {
+	values := url.Values{}
+	values.Set("pair", pairList)
+
+	type Response struct {
+		Error []interface{}             `json:"error"`
+		Data  map[string]TickerResponse `json:"result"`
+	}
+
+	resp := Response{}
+	path := fmt.Sprintf("%s/%s/public/%s?%s", krakenAPIURL, krakenAPIVersion, krakenTicker, values.Encode())
+
+	err := k.SendHTTPRequest(path, &resp)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(resp.Error) > 0 {
+		return nil, fmt.Errorf("Kraken error: %s", resp.Error)
+	}
+
+	tickers := make(Tickers)
+
+	for x, y := range resp.Data {
+		ticker := Ticker{}
+		ticker.Ask, _ = strconv.ParseFloat(y.Ask[0], 64)
+		ticker.Bid, _ = strconv.ParseFloat(y.Bid[0], 64)
+		ticker.Last, _ = strconv.ParseFloat(y.Last[0], 64)
+		ticker.Volume, _ = strconv.ParseFloat(y.Volume[1], 64)
+		ticker.VWAP, _ = strconv.ParseFloat(y.VWAP[1], 64)
+		ticker.Trades = y.Trades[1]
+		ticker.Low, _ = strconv.ParseFloat(y.Low[1], 64)
+		ticker.High, _ = strconv.ParseFloat(y.High[1], 64)
+		ticker.Open, _ = strconv.ParseFloat(y.Open, 64)
+		tickers[x] = ticker
+	}
+	return tickers, nil
+}
+
 // GetOHLC returns an array of open high low close values of a currency pair
 func (k *Kraken) GetOHLC(symbol string) ([]OpenHighLowClose, error) {
 	values := url.Values{}
@@ -209,7 +256,7 @@ func (k *Kraken) GetOHLC(symbol string) ([]OpenHighLowClose, error) {
 	var OHLC []OpenHighLowClose
 	var result Response
 
-	path := fmt.Sprintf("%s/%s/public/%s?%s", krakenAPIURL, krakenAPIVersion, krakenOHLC, values.Encode())
+	path := fmt.Sprintf("%s/%s/public/%s?%s", k.APIUrl, krakenAPIVersion, krakenOHLC, values.Encode())
 
 	err := k.SendHTTPRequest(path, &result)
 	if err != nil {
@@ -255,7 +302,7 @@ func (k *Kraken) GetDepth(symbol string) (Orderbook, error) {
 	var result interface{}
 	var orderBook Orderbook
 
-	path := fmt.Sprintf("%s/%s/public/%s?%s", krakenAPIURL, krakenAPIVersion, krakenDepth, values.Encode())
+	path := fmt.Sprintf("%s/%s/public/%s?%s", k.APIUrl, krakenAPIVersion, krakenDepth, values.Encode())
 
 	err := k.SendHTTPRequest(path, &result)
 	if err != nil {
@@ -314,7 +361,7 @@ func (k *Kraken) GetTrades(symbol string) ([]RecentTrades, error) {
 	var recentTrades []RecentTrades
 	var result interface{}
 
-	path := fmt.Sprintf("%s/%s/public/%s?%s", krakenAPIURL, krakenAPIVersion, krakenTrades, values.Encode())
+	path := fmt.Sprintf("%s/%s/public/%s?%s", k.APIUrl, krakenAPIVersion, krakenTrades, values.Encode())
 
 	err := k.SendHTTPRequest(path, &result)
 	if err != nil {
@@ -355,7 +402,7 @@ func (k *Kraken) GetSpread(symbol string) ([]Spread, error) {
 	var peanutButter []Spread
 	var response interface{}
 
-	path := fmt.Sprintf("%s/%s/public/%s?%s", krakenAPIURL, krakenAPIVersion, krakenSpread, values.Encode())
+	path := fmt.Sprintf("%s/%s/public/%s?%s", k.APIUrl, krakenAPIVersion, krakenSpread, values.Encode())
 
 	err := k.SendHTTPRequest(path, &response)
 	if err != nil {
@@ -402,6 +449,40 @@ func (k *Kraken) GetBalance() (map[string]float64, error) {
 	}
 
 	return result, GetError(response.Error)
+}
+
+// GetWithdrawInfo gets withdrawal fees
+func (k *Kraken) GetWithdrawInfo(currency string, amount float64) (WithdrawInformation, error) {
+	var response struct {
+		Error  []string            `json:"error"`
+		Result WithdrawInformation `json:"result"`
+	}
+	params := url.Values{}
+	params.Set("asset ", currency)
+	params.Set("key  ", "")
+	params.Set("amount ", fmt.Sprintf("%f", amount))
+
+	if err := k.SendAuthenticatedHTTPRequest(krakenWithdrawInfo, params, &response); err != nil {
+		return response.Result, err
+	}
+
+	return response.Result, GetError(response.Error)
+}
+
+// GetDepositMethods gets withdrawal fees
+func (k *Kraken) GetDepositMethods(currency string) ([]DepositMethods, error) {
+	var response struct {
+		Error  []string         `json:"error"`
+		Result []DepositMethods `json:"result"`
+	}
+	params := url.Values{}
+	params.Set("asset ", currency)
+
+	if err := k.SendAuthenticatedHTTPRequest(krakenDepositMethods, params, &response); err != nil {
+		return response.Result, err
+	}
+
+	return response.Result, GetError(response.Error)
 }
 
 // GetTradeBalance returns full information about your trades on Kraken
@@ -831,12 +912,70 @@ func (k *Kraken) SendAuthenticatedHTTPRequest(method string, params url.Values, 
 	signature := common.Base64Encode(common.GetHMAC(common.HashSHA512, append([]byte(path), shasum...), secret))
 
 	if k.Verbose {
-		log.Printf("Sending POST request to %s, path: %s, params: %s", krakenAPIURL, path, encoded)
+		log.Printf("Sending POST request to %s, path: %s, params: %s", k.APIUrl, path, encoded)
 	}
 
 	headers := make(map[string]string)
 	headers["API-Key"] = k.APIKey
 	headers["API-Sign"] = signature
 
-	return k.SendPayload("POST", krakenAPIURL+path, headers, strings.NewReader(encoded), result, true, k.Verbose)
+	return k.SendPayload("POST", k.APIUrl+path, headers, strings.NewReader(encoded), result, true, k.Verbose)
+}
+
+// GetFee returns an estimate of fee based on type of transaction
+func (k *Kraken) GetFee(feeBuilder exchange.FeeBuilder) (float64, error) {
+	var fee float64
+	currency := feeBuilder.FirstCurrency + feeBuilder.Delimiter + feeBuilder.SecondCurrency
+
+	switch feeBuilder.FeeType {
+	case exchange.CryptocurrencyTradeFee:
+		feePair, err := k.GetTradeVolume(true, currency)
+		if err != nil {
+			return 0, err
+		}
+		if feeBuilder.IsMaker {
+			fee = calculateTradingFee(currency, feePair.FeesMaker, feeBuilder.PurchasePrice, feeBuilder.Amount)
+		} else {
+			fee = calculateTradingFee(currency, feePair.Fees, feeBuilder.PurchasePrice, feeBuilder.Amount)
+		}
+	case exchange.CryptocurrencyWithdrawalFee:
+		fee = getWithdrawalFee(feeBuilder.FirstCurrency)
+	case exchange.InternationalBankDepositFee:
+		depositMethods, err := k.GetDepositMethods(feeBuilder.CurrencyItem)
+		if err != nil {
+			return 0, err
+		}
+
+		for _, i := range depositMethods {
+			switch feeBuilder.BankTransactionType {
+			case exchange.WireTransfer:
+				if i.Method == "SynapsePay (US Wire)" {
+					fee = i.Fee
+					return fee, nil
+				}
+			}
+		}
+	case exchange.CyptocurrencyDepositFee:
+		fee = getCryptocurrencyDepositFee(feeBuilder.FirstCurrency)
+
+	case exchange.InternationalBankWithdrawalFee:
+		fee = getWithdrawalFee(feeBuilder.CurrencyItem)
+	}
+	if fee < 0 {
+		fee = 0
+	}
+
+	return fee, nil
+}
+
+func getWithdrawalFee(currency string) float64 {
+	return WithdrawalFees[currency]
+}
+
+func getCryptocurrencyDepositFee(currency string) float64 {
+	return DepositFees[currency]
+}
+
+func calculateTradingFee(currency string, feePair map[string]TradeVolumeFee, purchasePrice, amount float64) float64 {
+	return (feePair[currency].Fee / 100) * purchasePrice * amount
 }

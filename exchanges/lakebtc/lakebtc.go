@@ -10,6 +10,7 @@ import (
 
 	"github.com/thrasher-/gocryptotrader/common"
 	"github.com/thrasher-/gocryptotrader/config"
+	"github.com/thrasher-/gocryptotrader/currency/symbol"
 	"github.com/thrasher-/gocryptotrader/exchanges"
 	"github.com/thrasher-/gocryptotrader/exchanges/request"
 	"github.com/thrasher-/gocryptotrader/exchanges/ticker"
@@ -47,8 +48,8 @@ func (l *LakeBTC) SetDefaults() {
 	l.TakerFee = 0.2
 	l.MakerFee = 0.15
 	l.Verbose = false
-	l.Websocket = false
 	l.RESTPollingDelay = 10
+	l.APIWithdrawPermissions = exchange.AutoWithdrawCrypto | exchange.WithdrawFiatViaWebsiteOnly
 	l.RequestCurrencyPairFormat.Delimiter = ""
 	l.RequestCurrencyPairFormat.Uppercase = true
 	l.ConfigCurrencyPairFormat.Delimiter = ""
@@ -56,7 +57,13 @@ func (l *LakeBTC) SetDefaults() {
 	l.AssetTypes = []string{ticker.Spot}
 	l.SupportsAutoPairUpdating = true
 	l.SupportsRESTTickerBatching = true
-	l.Requester = request.New(l.Name, request.NewRateLimit(time.Second, lakeBTCAuthRate), request.NewRateLimit(time.Second, lakeBTCUnauth), common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
+	l.Requester = request.New(l.Name,
+		request.NewRateLimit(time.Second, lakeBTCAuthRate),
+		request.NewRateLimit(time.Second, lakeBTCUnauth),
+		common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
+	l.APIUrlDefault = lakeBTCAPIURL
+	l.APIUrl = l.APIUrlDefault
+	l.WebsocketInit()
 }
 
 // Setup sets exchange configuration profile
@@ -71,7 +78,6 @@ func (l *LakeBTC) Setup(exch config.ExchangeConfig) {
 		l.SetHTTPClientUserAgent(exch.HTTPUserAgent)
 		l.RESTPollingDelay = exch.RESTPollingDelay
 		l.Verbose = exch.Verbose
-		l.Websocket = exch.Websocket
 		l.BaseCurrencies = common.SplitStrings(exch.BaseCurrencies, ",")
 		l.AvailablePairs = common.SplitStrings(exch.AvailablePairs, ",")
 		l.EnabledPairs = common.SplitStrings(exch.EnabledPairs, ",")
@@ -84,6 +90,14 @@ func (l *LakeBTC) Setup(exch config.ExchangeConfig) {
 			log.Fatal(err)
 		}
 		err = l.SetAutoPairDefaults()
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = l.SetAPIURL(exch)
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = l.SetClientProxyAddress(exch.ProxyAddress)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -105,18 +119,10 @@ func (l *LakeBTC) GetTradablePairs() ([]string, error) {
 	return currencies, nil
 }
 
-// GetFee returns maker or taker fee
-func (l *LakeBTC) GetFee(maker bool) float64 {
-	if maker {
-		return l.MakerFee
-	}
-	return l.TakerFee
-}
-
 // GetTicker returns the current ticker from lakeBTC
 func (l *LakeBTC) GetTicker() (map[string]Ticker, error) {
 	response := make(map[string]TickerResponse)
-	path := fmt.Sprintf("%s/%s", lakeBTCAPIURL, lakeBTCTicker)
+	path := fmt.Sprintf("%s/%s", l.APIUrl, lakeBTCTicker)
 
 	if err := l.SendHTTPRequest(path, &response); err != nil {
 		return nil, err
@@ -158,7 +164,7 @@ func (l *LakeBTC) GetOrderBook(currency string) (Orderbook, error) {
 		Bids [][]string `json:"bids"`
 		Asks [][]string `json:"asks"`
 	}
-	path := fmt.Sprintf("%s/%s?symbol=%s", lakeBTCAPIURL, lakeBTCOrderbook, common.StringToLower(currency))
+	path := fmt.Sprintf("%s/%s?symbol=%s", l.APIUrl, lakeBTCOrderbook, common.StringToLower(currency))
 	resp := Response{}
 	err := l.SendHTTPRequest(path, &resp)
 	if err != nil {
@@ -198,7 +204,7 @@ func (l *LakeBTC) GetOrderBook(currency string) (Orderbook, error) {
 
 // GetTradeHistory returns the trade history for a given currency pair
 func (l *LakeBTC) GetTradeHistory(currency string) ([]TradeHistory, error) {
-	path := fmt.Sprintf("%s/%s?symbol=%s", lakeBTCAPIURL, lakeBTCTrades, common.StringToLower(currency))
+	path := fmt.Sprintf("%s/%s?symbol=%s", l.APIUrl, lakeBTCTrades, common.StringToLower(currency))
 	resp := []TradeHistory{}
 
 	return resp, l.SendHTTPRequest(path, &resp)
@@ -320,7 +326,7 @@ func (l *LakeBTC) SendAuthenticatedHTTPRequest(method, params string, result int
 	hmac := common.GetHMAC(common.HashSHA1, []byte(req), []byte(l.APISecret))
 
 	if l.Verbose {
-		log.Printf("Sending POST request to %s calling method %s with params %s\n", lakeBTCAPIURL, method, req)
+		log.Printf("Sending POST request to %s calling method %s with params %s\n", l.APIUrl, method, req)
 	}
 
 	postData := make(map[string]interface{})
@@ -338,5 +344,43 @@ func (l *LakeBTC) SendAuthenticatedHTTPRequest(method, params string, result int
 	headers["Authorization"] = "Basic " + common.Base64Encode([]byte(l.APIKey+":"+common.HexEncodeToString(hmac)))
 	headers["Content-Type"] = "application/json-rpc"
 
-	return l.SendPayload("POST", lakeBTCAPIURL, headers, strings.NewReader(string(data)), result, true, l.Verbose)
+	return l.SendPayload("POST", l.APIUrl, headers, strings.NewReader(string(data)), result, true, l.Verbose)
+}
+
+// GetFee returns an estimate of fee based on type of transaction
+func (l *LakeBTC) GetFee(feeBuilder exchange.FeeBuilder) (float64, error) {
+	var fee float64
+	switch feeBuilder.FeeType {
+	case exchange.CryptocurrencyTradeFee:
+		fee = calculateTradingFee(feeBuilder.PurchasePrice, feeBuilder.Amount, feeBuilder.IsMaker)
+	case exchange.CyptocurrencyDepositFee:
+		fee = getCryptocurrencyWithdrawalFee(feeBuilder.FirstCurrency)
+	case exchange.InternationalBankWithdrawalFee:
+		// fees for withdrawals are dynamic. They cannot be calculated in advance
+		// As they are manually performed via the website, it can only be determined when submitting the request
+	}
+
+	if fee < 0 {
+		fee = 0
+	}
+
+	return fee, nil
+}
+
+func calculateTradingFee(purchasePrice, amount float64, isMaker bool) (fee float64) {
+	if isMaker {
+		// TODO: Volume based fee calculation
+		fee = 0.0015
+	} else {
+		fee = 0.002
+	}
+
+	return fee * amount * purchasePrice
+}
+
+func getCryptocurrencyWithdrawalFee(currency string) (fee float64) {
+	if currency == symbol.BTC {
+		fee = 0.001
+	}
+	return fee
 }

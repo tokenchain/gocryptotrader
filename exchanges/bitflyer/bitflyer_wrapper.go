@@ -24,7 +24,7 @@ func (b *Bitflyer) Start(wg *sync.WaitGroup) {
 // Run implements the Bitflyer wrapper
 func (b *Bitflyer) Run() {
 	if b.Verbose {
-		log.Printf("%s Websocket: %s.", b.GetName(), common.IsEnabled(b.Websocket))
+		log.Printf("%s Websocket: %s.", b.GetName(), common.IsEnabled(b.Websocket.IsEnabled()))
 		log.Printf("%s polling delay: %ds.\n", b.GetName(), b.RESTPollingDelay)
 		log.Printf("%s %d currencies enabled: %s.\n", b.GetName(), len(b.EnabledPairs), b.EnabledPairs)
 	}
@@ -81,7 +81,7 @@ func (b *Bitflyer) GetTickerPrice(p pair.CurrencyPair, assetType string) (ticker
 
 // CheckFXString upgrades currency pair if needed
 func (b *Bitflyer) CheckFXString(p pair.CurrencyPair) pair.CurrencyPair {
-	if common.StringContains(p.GetFirstCurrency().String(), "FX") {
+	if common.StringContains(p.FirstCurrency.String(), "FX") {
 		p.FirstCurrency = "FX_BTC"
 		return p
 	}
@@ -200,4 +200,14 @@ func (b *Bitflyer) WithdrawFiatExchangeFunds(currency pair.CurrencyItem, amount 
 // withdrawal is submitted
 func (b *Bitflyer) WithdrawFiatExchangeFundsToInternationalBank(currency pair.CurrencyItem, amount float64) (string, error) {
 	return "", errors.New("not yet implemented")
+}
+
+// GetWebsocket returns a pointer to the exchange websocket
+func (b *Bitflyer) GetWebsocket() (*exchange.Websocket, error) {
+	return nil, errors.New("not yet implemented")
+}
+
+// GetWithdrawCapabilities returns the types of withdrawal methods permitted by the exchange
+func (b *Bitflyer) GetWithdrawCapabilities() uint32 {
+	return b.GetWithdrawPermissions()
 }

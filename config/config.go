@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path"
+	"runtime"
 	"strconv"
 	"sync"
 	"time"
@@ -54,6 +56,8 @@ const (
 	WarningExchangeAuthAPIDefaultOrEmptyValues      = "WARNING -- Exchange %s: Authenticated API support disabled due to default/empty APIKey/Secret/ClientID values."
 	WarningCurrencyExchangeProvider                 = "WARNING -- Currency exchange provider invalid valid. Reset to Fixer."
 	WarningPairsLastUpdatedThresholdExceeded        = "WARNING -- Exchange %s: Last manual update of available currency pairs has exceeded %d days. Manual update required!"
+	APIURLNonDefaultMessage                         = "NON_DEFAULT_HTTP_LINK_TO_EXCHANGE_API"
+	WebsocketURLNonDefaultMessage                   = "NON_DEFAULT_HTTP_LINK_TO_WEBSOCKET_EXCHANGE_API"
 )
 
 // Variables here are used for configuration
@@ -122,7 +126,12 @@ type ExchangeConfig struct {
 	AuthenticatedAPISupport   bool                      `json:"authenticatedApiSupport"`
 	APIKey                    string                    `json:"apiKey"`
 	APISecret                 string                    `json:"apiSecret"`
+	APIAuthPEMKeySupport      bool                      `json:"apiAuthPemKeySupport,omitempty"`
 	APIAuthPEMKey             string                    `json:"apiAuthPemKey,omitempty"`
+	APIURL                    string                    `json:"apiUrl"`
+	APIURLSecondary           string                    `json:"apiUrlSecondary"`
+	ProxyAddress              string                    `json:"proxyAddress"`
+	WebsocketURL              string                    `json:"websocketUrl"`
 	ClientID                  string                    `json:"clientId,omitempty"`
 	AvailablePairs            string                    `json:"availablePairs"`
 	EnabledPairs              string                    `json:"enabledPairs"`
@@ -315,25 +324,25 @@ func (c *Config) CheckClientBankAccounts() error {
 		return nil
 	}
 
-	for _, bank := range c.BankAccounts {
-		if bank.Enabled == true {
-			if bank.BankName == "" || bank.BankAddress == "" {
+	for i := range c.BankAccounts {
+		if c.BankAccounts[i].Enabled == true {
+			if c.BankAccounts[i].BankName == "" || c.BankAccounts[i].BankAddress == "" {
 				return fmt.Errorf("banking details for %s is enabled but variables not set correctly",
-					bank.BankName)
+					c.BankAccounts[i].BankName)
 			}
 
-			if bank.AccountName == "" || bank.AccountNumber == "" {
+			if c.BankAccounts[i].AccountName == "" || c.BankAccounts[i].AccountNumber == "" {
 				return fmt.Errorf("banking account details for %s variables not set correctly",
-					bank.BankName)
+					c.BankAccounts[i].BankName)
 			}
-			if bank.IBAN == "" && bank.SWIFTCode == "" && bank.BSBNumber == "" {
+			if c.BankAccounts[i].IBAN == "" && c.BankAccounts[i].SWIFTCode == "" && c.BankAccounts[i].BSBNumber == "" {
 				return fmt.Errorf("critical banking numbers not set for %s in %s account",
-					bank.BankName,
-					bank.AccountName)
+					c.BankAccounts[i].BankName,
+					c.BankAccounts[i].AccountName)
 			}
 
-			if bank.SupportedExchanges == "" {
-				bank.SupportedExchanges = "ALL"
+			if c.BankAccounts[i].SupportedExchanges == "" {
+				c.BankAccounts[i].SupportedExchanges = "ALL"
 			}
 		}
 	}
@@ -373,17 +382,33 @@ func (c *Config) CheckCommunicationsConfig() error {
 	}
 
 	if c.Communications.SMSGlobalConfig.Name == "" {
-		if c.SMS.Contacts != nil {
-			c.Communications.SMSGlobalConfig = SMSGlobalConfig{
-				Name:     "SMSGlobal",
-				Enabled:  c.SMS.Enabled,
-				Verbose:  c.SMS.Verbose,
-				Username: c.SMS.Username,
-				Password: c.SMS.Password,
-				Contacts: c.SMS.Contacts,
+		if c.SMS != nil {
+			if c.SMS.Contacts != nil {
+				c.Communications.SMSGlobalConfig = SMSGlobalConfig{
+					Name:     "SMSGlobal",
+					Enabled:  c.SMS.Enabled,
+					Verbose:  c.SMS.Verbose,
+					Username: c.SMS.Username,
+					Password: c.SMS.Password,
+					Contacts: c.SMS.Contacts,
+				}
+				// flush old SMS config
+				c.SMS = nil
+			} else {
+				c.Communications.SMSGlobalConfig = SMSGlobalConfig{
+					Name:     "SMSGlobal",
+					Username: "main",
+					Password: "test",
+
+					Contacts: []SMSContact{
+						{
+							Name:    "bob",
+							Number:  "1234",
+							Enabled: false,
+						},
+					},
+				}
 			}
-			// flush old SMS config
-			c.SMS = nil
 		} else {
 			c.Communications.SMSGlobalConfig = SMSGlobalConfig{
 				Name:     "SMSGlobal",
@@ -399,6 +424,7 @@ func (c *Config) CheckCommunicationsConfig() error {
 				},
 			}
 		}
+
 	} else {
 		if c.SMS != nil {
 			// flush old SMS config
@@ -432,7 +458,8 @@ func (c *Config) CheckCommunicationsConfig() error {
 	}
 	if c.Communications.SlackConfig.Enabled {
 		if c.Communications.SlackConfig.TargetChannel == "" ||
-			c.Communications.SlackConfig.VerificationToken == "" {
+			c.Communications.SlackConfig.VerificationToken == "" ||
+			c.Communications.SlackConfig.VerificationToken == "testtest" {
 			return errors.New("Slack enabled in config but variable data not set")
 		}
 	}
@@ -447,7 +474,7 @@ func (c *Config) CheckCommunicationsConfig() error {
 		if c.Communications.SMTPConfig.Host == "" ||
 			c.Communications.SMTPConfig.Port == "" ||
 			c.Communications.SMTPConfig.AccountName == "" ||
-			len(c.Communications.SMTPConfig.AccountName) == 0 {
+			c.Communications.SMTPConfig.AccountPassword == "" {
 			return errors.New("SMTP enabled in config but variable data not set")
 		}
 	}
@@ -456,6 +483,55 @@ func (c *Config) CheckCommunicationsConfig() error {
 			return errors.New("Telegram enabled in config but variable data not set")
 		}
 	}
+	return nil
+}
+
+// CheckPairConsistency checks to see if the enabled pair exists in the
+// available pairs list
+func (c *Config) CheckPairConsistency(exchName string) error {
+	enabledPairs, err := c.GetEnabledPairs(exchName)
+	if err != nil {
+		return err
+	}
+
+	availPairs, err := c.GetAvailablePairs(exchName)
+	if err != nil {
+		return err
+	}
+
+	var pairs, pairsRemoved []pair.CurrencyPair
+	update := false
+	for x := range enabledPairs {
+		if !pair.Contains(availPairs, enabledPairs[x], true) {
+			update = true
+			pairsRemoved = append(pairsRemoved, enabledPairs[x])
+			continue
+		}
+		pairs = append(pairs, enabledPairs[x])
+	}
+
+	if !update {
+		return nil
+	}
+
+	exchCfg, err := c.GetExchangeConfig(exchName)
+	if err != nil {
+		return err
+	}
+
+	if len(pairs) == 0 {
+		exchCfg.EnabledPairs = pair.RandomPairFromPairs(availPairs).Pair().String()
+		log.Printf("Exchange %s: No enabled pairs found in available pairs, randomly added %v\n", exchName, exchCfg.EnabledPairs)
+	} else {
+		exchCfg.EnabledPairs = common.JoinStrings(pair.PairsToStringArray(pairs), ",")
+	}
+
+	err = c.UpdateExchangeConfig(exchCfg)
+	if err != nil {
+		return err
+	}
+
+	log.Printf("Exchange %s: Removing enabled pair(s) %v from enabled pairs as it isn't an available pair", exchName, pair.PairsToStringArray(pairsRemoved))
 	return nil
 }
 
@@ -618,6 +694,26 @@ func (c *Config) CheckExchangeConfigValues() error {
 			c.Exchanges[i].Name = "CoinbasePro"
 		}
 
+		if exch.WebsocketURL != WebsocketURLNonDefaultMessage {
+			if exch.WebsocketURL == "" {
+				c.Exchanges[i].WebsocketURL = WebsocketURLNonDefaultMessage
+			}
+		}
+
+		if exch.APIURL != APIURLNonDefaultMessage {
+			if exch.APIURL == "" {
+				// Set default if nothing set
+				c.Exchanges[i].APIURL = APIURLNonDefaultMessage
+			}
+		}
+
+		if exch.APIURLSecondary != APIURLNonDefaultMessage {
+			if exch.APIURLSecondary == "" {
+				// Set default if nothing set
+				c.Exchanges[i].APIURLSecondary = APIURLNonDefaultMessage
+			}
+		}
+
 		if exch.Enabled {
 			if exch.Name == "" {
 				return fmt.Errorf(ErrExchangeNameEmpty, i)
@@ -653,6 +749,11 @@ func (c *Config) CheckExchangeConfigValues() error {
 			if exch.HTTPTimeout <= 0 {
 				log.Printf("Exchange %s HTTP Timeout value not set, defaulting to %v.", exch.Name, configDefaultHTTPTimeout)
 				c.Exchanges[i].HTTPTimeout = configDefaultHTTPTimeout
+			}
+
+			err := c.CheckPairConsistency(exch.Name)
+			if err != nil {
+				log.Printf("Exchange %s: CheckPairConsistency error: %s", exch.Name, err)
 			}
 
 			if len(exch.BankAccounts) == 0 {
@@ -757,7 +858,7 @@ func (c *Config) CheckCurrencyConfigValues() error {
 				c.Currency.ForexProviders[i].PrimaryProvider = false
 				continue
 			}
-			if c.Currency.ForexProviders[i].APIKeyLvl == -1 {
+			if c.Currency.ForexProviders[i].APIKeyLvl == -1 && c.Currency.ForexProviders[i].Name != "CurrencyConverter" {
 				log.Printf("WARNING -- %s APIKey Level not set, functions limited. Please set this in your config.json file",
 					c.Currency.ForexProviders[i].Name)
 			}
@@ -871,39 +972,71 @@ func GetFilePath(file string) (string, error) {
 
 	exePath, err := common.GetExecutablePath()
 	if err != nil {
-		log.Fatalf("Unable to get executable path: %s", err)
 		return "", err
 	}
 
-	tempPath := exePath + common.GetOSPathSlash()
-	encPath := tempPath + EncryptedConfigFile
-	cfgPath := tempPath + ConfigFile
+	oldDir := exePath + common.GetOSPathSlash()
+	oldDirs := []string{oldDir + ConfigFile, oldDir + EncryptedConfigFile}
 
-	data, err := common.ReadFile(encPath)
-	if err == nil {
-		if ConfirmECS(data) {
-			return encPath, nil
+	newDir := common.GetDefaultDataDir(runtime.GOOS) + common.GetOSPathSlash()
+	err = common.CheckDir(newDir, true)
+	if err != nil {
+		return "", err
+	}
+	newDirs := []string{newDir + ConfigFile, newDir + EncryptedConfigFile}
+
+	// First upgrade the old dir config file if it exists to the corresponding new one
+	for x := range oldDirs {
+		_, err := os.Stat(oldDirs[x])
+		if os.IsNotExist(err) {
+			continue
+		} else {
+			if path.Ext(oldDirs[x]) == ".json" {
+				err = os.Rename(oldDirs[x], newDirs[0])
+				if err != nil {
+					return "", err
+				}
+				log.Printf("Renamed old config file %s to %s", oldDirs[x], newDirs[0])
+			} else {
+				err = os.Rename(oldDirs[x], newDirs[1])
+				if err != nil {
+					return "", err
+				}
+				log.Printf("Renamed old config file %s to %s", oldDirs[x], newDirs[1])
+			}
 		}
-		err = os.Rename(encPath, cfgPath)
+	}
+
+	// Secondly check to see if the new config file extension is correct or not
+	for x := range newDirs {
+		_, err := os.Stat(newDirs[x])
+		if os.IsNotExist(err) {
+			continue
+		}
+
+		data, err := common.ReadFile(newDirs[x])
+		if ConfirmECS(data) {
+			if path.Ext(newDirs[x]) == ".dat" {
+				return newDirs[x], nil
+			}
+			err = os.Rename(newDirs[x], newDirs[1])
+			if err != nil {
+				return "", err
+			}
+			return newDirs[1], nil
+		}
+
+		if path.Ext(newDirs[x]) == ".json" {
+			return newDirs[x], nil
+		}
+		err = os.Rename(newDirs[x], newDirs[0])
 		if err != nil {
-			log.Fatalf("Unable to rename config file: %s", err)
 			return "", err
 		}
-		log.Printf("Renaming non-encrypted config file from %s to %s",
-			encPath, cfgPath)
-		return cfgPath, nil
+		return newDirs[0], nil
 	}
-	if !ConfirmECS(data) {
-		return cfgPath, nil
-	}
-	err = os.Rename(cfgPath, encPath)
-	if err != nil {
-		log.Fatalf("Unable to rename config file: %s", err)
-		return "", err
-	}
-	log.Printf("Renamed encrypted config file from %s to %s", cfgPath,
-		encPath)
-	return encPath, nil
+
+	return "", errors.New("config default file path error")
 }
 
 // ReadConfig verifies and checks for encryption and verifies the unencrypted

@@ -1,5 +1,7 @@
 package anx
 
+import "github.com/thrasher-/gocryptotrader/currency/symbol"
+
 // Currency holds the currency information
 type Currency struct {
 	Decimals               int     `json:"decimals"`
@@ -53,6 +55,29 @@ type CurrencyPair struct {
 	PreferredMarket      string  `json:"preferredMarket"`
 	ChartEnabled         bool    `json:"chartEnabled"`
 	SimpleTradeEnabled   bool    `json:"simpleTradeEnabled"`
+}
+
+// AccountInformation Used by Get account information
+// Retrieves details of the account and api's
+type AccountInformation struct {
+	UserUUID   string   `json:"userUuid"`
+	Rights     []string `json:"Rights"`
+	ResultCode string   `json:"resultCode"`
+	Wallets    struct {
+		Balance              Amount `json:"Balance"`
+		AvailableBalance     Amount `json:"Available_Balance"`
+		DailyWithdrawalLimit Amount `json:"Daily_Withdrawal_Limit"`
+		MaxWithdraw          Amount `json:"Max_Withdraw"`
+	}
+}
+
+// Amount basic storage of wallet details
+type Amount struct {
+	DisplayShort string  `json:"displayShort"`
+	ValueInt     int64   `json:"valueInt"`
+	Currency     string  `json:"currency"`
+	Display      string  `json:"display"`
+	Value        float64 `json:"value"`
 }
 
 // CurrencyPairs stores currency pair info
@@ -145,4 +170,17 @@ type Depth struct {
 		Asks           []DepthItem `json:"asks"`
 		Bids           []DepthItem `json:"bids"`
 	} `json:"data"`
+}
+
+// WithdrawalFees the large list of predefined withdrawal fees
+// Prone to change
+var WithdrawalFees = map[string]float64{
+	symbol.BTC:  0.002,
+	symbol.DOGE: 0.1,
+	symbol.ETH:  0.005,
+	symbol.GNT:  0.001,
+	symbol.LTC:  0.02,
+	symbol.OAX:  0.001,
+	symbol.XRP:  1,
+	symbol.HKD:  0.01,
 }

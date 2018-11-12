@@ -24,7 +24,7 @@ func (y *Yobit) Start(wg *sync.WaitGroup) {
 // Run implements the Yobit wrapper
 func (y *Yobit) Run() {
 	if y.Verbose {
-		log.Printf("%s Websocket: %s.", y.GetName(), common.IsEnabled(y.Websocket))
+		log.Printf("%s Websocket: %s.", y.GetName(), common.IsEnabled(y.Websocket.IsEnabled()))
 		log.Printf("%s polling delay: %ds.\n", y.GetName(), y.RESTPollingDelay)
 		log.Printf("%s %d currencies enabled: %s.\n", y.GetName(), len(y.EnabledPairs), y.EnabledPairs)
 	}
@@ -187,4 +187,19 @@ func (y *Yobit) WithdrawFiatExchangeFunds(currency pair.CurrencyItem, amount flo
 // withdrawal is submitted
 func (y *Yobit) WithdrawFiatExchangeFundsToInternationalBank(currency pair.CurrencyItem, amount float64) (string, error) {
 	return "", errors.New("not yet implemented")
+}
+
+// GetWebsocket returns a pointer to the exchange websocket
+func (y *Yobit) GetWebsocket() (*exchange.Websocket, error) {
+	return nil, errors.New("not yet implemented")
+}
+
+// GetFeeByType returns an estimate of fee based on type of transaction
+func (y *Yobit) GetFeeByType(feeBuilder exchange.FeeBuilder) (float64, error) {
+	return y.GetFee(feeBuilder)
+}
+
+// GetWithdrawCapabilities returns the types of withdrawal methods permitted by the exchange
+func (y *Yobit) GetWithdrawCapabilities() uint32 {
+	return y.GetWithdrawPermissions()
 }

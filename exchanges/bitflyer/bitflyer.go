@@ -10,6 +10,7 @@ import (
 
 	"github.com/thrasher-/gocryptotrader/common"
 	"github.com/thrasher-/gocryptotrader/config"
+	"github.com/thrasher-/gocryptotrader/currency/symbol"
 	exchange "github.com/thrasher-/gocryptotrader/exchanges"
 	"github.com/thrasher-/gocryptotrader/exchanges/request"
 	"github.com/thrasher-/gocryptotrader/exchanges/ticker"
@@ -79,8 +80,8 @@ func (b *Bitflyer) SetDefaults() {
 	b.Name = "Bitflyer"
 	b.Enabled = false
 	b.Verbose = false
-	b.Websocket = false
 	b.RESTPollingDelay = 10
+	b.APIWithdrawPermissions = exchange.WithdrawCryptoViaWebsiteOnly | exchange.AutoWithdrawFiat
 	b.RequestCurrencyPairFormat.Delimiter = "_"
 	b.RequestCurrencyPairFormat.Uppercase = true
 	b.ConfigCurrencyPairFormat.Delimiter = "_"
@@ -88,7 +89,15 @@ func (b *Bitflyer) SetDefaults() {
 	b.AssetTypes = []string{ticker.Spot}
 	b.SupportsAutoPairUpdating = false
 	b.SupportsRESTTickerBatching = false
-	b.Requester = request.New(b.Name, request.NewRateLimit(time.Minute, bitflyerAuthRate), request.NewRateLimit(time.Minute, bitflyerUnauthRate), common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
+	b.Requester = request.New(b.Name,
+		request.NewRateLimit(time.Minute, bitflyerAuthRate),
+		request.NewRateLimit(time.Minute, bitflyerUnauthRate),
+		common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
+	b.APIUrlDefault = japanURL
+	b.APIUrl = b.APIUrlDefault
+	b.APIUrlSecondaryDefault = chainAnalysis
+	b.APIUrlSecondary = b.APIUrlSecondaryDefault
+	b.WebsocketInit()
 }
 
 // Setup takes in the supplied exchange configuration details and sets params
@@ -103,8 +112,7 @@ func (b *Bitflyer) Setup(exch config.ExchangeConfig) {
 		b.SetHTTPClientUserAgent(exch.HTTPUserAgent)
 		b.RESTPollingDelay = exch.RESTPollingDelay
 		b.Verbose = exch.Verbose
-		b.Websocket = exch.Websocket
-		b.APIUrl = japanURL
+		b.Websocket.SetEnabled(exch.Websocket)
 		b.BaseCurrencies = common.SplitStrings(exch.BaseCurrencies, ",")
 		b.AvailablePairs = common.SplitStrings(exch.AvailablePairs, ",")
 		b.EnabledPairs = common.SplitStrings(exch.EnabledPairs, ",")
@@ -120,6 +128,14 @@ func (b *Bitflyer) Setup(exch config.ExchangeConfig) {
 		if err != nil {
 			log.Fatal(err)
 		}
+		err = b.SetAPIURL(exch)
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = b.SetClientProxyAddress(exch.ProxyAddress)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 }
 
@@ -127,45 +143,45 @@ func (b *Bitflyer) Setup(exch config.ExchangeConfig) {
 // analysis system
 func (b *Bitflyer) GetLatestBlockCA() (ChainAnalysisBlock, error) {
 	var resp ChainAnalysisBlock
-	path := fmt.Sprintf("%s%s", chainAnalysis, latestBlock)
+	path := fmt.Sprintf("%s%s", b.APIUrlSecondary, latestBlock)
 
-	return resp, b.SendHTTPREquest(path, &resp)
+	return resp, b.SendHTTPRequest(path, &resp)
 }
 
 // GetBlockCA returns block information by blockhash from bitflyer chain
 // analysis system
 func (b *Bitflyer) GetBlockCA(blockhash string) (ChainAnalysisBlock, error) {
 	var resp ChainAnalysisBlock
-	path := fmt.Sprintf("%s%s%s", chainAnalysis, blockByBlockHash, blockhash)
+	path := fmt.Sprintf("%s%s%s", b.APIUrlSecondary, blockByBlockHash, blockhash)
 
-	return resp, b.SendHTTPREquest(path, &resp)
+	return resp, b.SendHTTPRequest(path, &resp)
 }
 
 // GetBlockbyHeightCA returns the block information by height from bitflyer chain
 // analysis system
 func (b *Bitflyer) GetBlockbyHeightCA(height int64) (ChainAnalysisBlock, error) {
 	var resp ChainAnalysisBlock
-	path := fmt.Sprintf("%s%s%s", chainAnalysis, blockByBlockHeight, strconv.FormatInt(height, 10))
+	path := fmt.Sprintf("%s%s%s", b.APIUrlSecondary, blockByBlockHeight, strconv.FormatInt(height, 10))
 
-	return resp, b.SendHTTPREquest(path, &resp)
+	return resp, b.SendHTTPRequest(path, &resp)
 }
 
 // GetTransactionByHashCA returns transaction information by txHash from
 // bitflyer chain analysis system
 func (b *Bitflyer) GetTransactionByHashCA(txHash string) (ChainAnalysisTransaction, error) {
 	var resp ChainAnalysisTransaction
-	path := fmt.Sprintf("%s%s%s", chainAnalysis, transaction, txHash)
+	path := fmt.Sprintf("%s%s%s", b.APIUrlSecondary, transaction, txHash)
 
-	return resp, b.SendHTTPREquest(path, &resp)
+	return resp, b.SendHTTPRequest(path, &resp)
 }
 
 // GetAddressInfoCA returns balance information for address by addressln string
 // from bitflyer chain analysis system
 func (b *Bitflyer) GetAddressInfoCA(addressln string) (ChainAnalysisAddress, error) {
 	var resp ChainAnalysisAddress
-	path := fmt.Sprintf("%s%s%s", chainAnalysis, address, addressln)
+	path := fmt.Sprintf("%s%s%s", b.APIUrlSecondary, address, addressln)
 
-	return resp, b.SendHTTPREquest(path, &resp)
+	return resp, b.SendHTTPRequest(path, &resp)
 }
 
 // GetMarkets returns market information
@@ -173,7 +189,7 @@ func (b *Bitflyer) GetMarkets() ([]MarketInfo, error) {
 	var resp []MarketInfo
 	path := fmt.Sprintf("%s%s", b.APIUrl, pubGetMarkets)
 
-	return resp, b.SendHTTPREquest(path, &resp)
+	return resp, b.SendHTTPRequest(path, &resp)
 }
 
 // GetOrderBook returns market orderbook depth
@@ -181,9 +197,9 @@ func (b *Bitflyer) GetOrderBook(symbol string) (Orderbook, error) {
 	var resp Orderbook
 	v := url.Values{}
 	v.Set("product_code", symbol)
-	path := fmt.Sprintf("%s%s?%s", japanURL, pubGetBoard, v.Encode())
+	path := fmt.Sprintf("%s%s?%s", b.APIUrl, pubGetBoard, v.Encode())
 
-	return resp, b.SendHTTPREquest(path, &resp)
+	return resp, b.SendHTTPRequest(path, &resp)
 }
 
 // GetTicker returns ticker information
@@ -191,9 +207,9 @@ func (b *Bitflyer) GetTicker(symbol string) (Ticker, error) {
 	var resp Ticker
 	v := url.Values{}
 	v.Set("product_code", symbol)
-	path := fmt.Sprintf("%s%s?%s", japanURL, pubGetTicker, v.Encode())
+	path := fmt.Sprintf("%s%s?%s", b.APIUrl, pubGetTicker, v.Encode())
 
-	return resp, b.SendHTTPREquest(path, &resp)
+	return resp, b.SendHTTPRequest(path, &resp)
 }
 
 // GetExecutionHistory returns past trades that were executed on the market
@@ -201,9 +217,9 @@ func (b *Bitflyer) GetExecutionHistory(symbol string) ([]ExecutedTrade, error) {
 	var resp []ExecutedTrade
 	v := url.Values{}
 	v.Set("product_code", symbol)
-	path := fmt.Sprintf("%s%s?%s", japanURL, pubGetExecutionHistory, v.Encode())
+	path := fmt.Sprintf("%s%s?%s", b.APIUrl, pubGetExecutionHistory, v.Encode())
 
-	return resp, b.SendHTTPREquest(path, &resp)
+	return resp, b.SendHTTPRequest(path, &resp)
 }
 
 // GetExchangeStatus returns exchange status information
@@ -212,7 +228,7 @@ func (b *Bitflyer) GetExchangeStatus() (string, error) {
 
 	path := fmt.Sprintf("%s%s", b.APIUrl, pubGetHealth)
 
-	err := b.SendHTTPREquest(path, &resp)
+	err := b.SendHTTPRequest(path, &resp)
 	if err != nil {
 		return "", err
 	}
@@ -239,7 +255,7 @@ func (b *Bitflyer) GetChats(FromDate string) ([]ChatLog, error) {
 	v.Set("from_date", FromDate)
 	path := fmt.Sprintf("%s%s?%s", b.APIUrl, pubGetChats, v.Encode())
 
-	return resp, b.SendHTTPREquest(path, &resp)
+	return resp, b.SendHTTPRequest(path, &resp)
 }
 
 // GetPermissions returns current permissions for associated with your API
@@ -358,8 +374,8 @@ func (b *Bitflyer) GetTradingCommission() {
 	// Needs to be updated
 }
 
-// SendHTTPREquest sends an unauthenticated request
-func (b *Bitflyer) SendHTTPREquest(path string, result interface{}) error {
+// SendHTTPRequest sends an unauthenticated request
+func (b *Bitflyer) SendHTTPRequest(path string, result interface{}) error {
 	return b.SendPayload("GET", path, nil, nil, result, false, b.Verbose)
 }
 
@@ -370,4 +386,56 @@ func (b *Bitflyer) SendAuthHTTPRequest(path string, params url.Values, result in
 	headers := make(map[string]string)
 	headers["ACCESS-KEY"] = b.APIKey
 	headers["ACCESS-TIMESTAMP"] = strconv.FormatInt(int64(time.Now().UnixNano()), 10)
+}
+
+// GetFee returns an estimate of fee based on type of transaction
+// TODO: Figure out the weird fee structure. Do we use Bitcoin Easy Exchange,Lightning Spot,Bitcoin Market,Lightning FX/Futures ???
+func (b *Bitflyer) GetFee(feeBuilder exchange.FeeBuilder) (float64, error) {
+	var fee float64
+
+	switch feeBuilder.FeeType {
+	case exchange.CryptocurrencyTradeFee:
+		fee = calculateTradingFee(feeBuilder.PurchasePrice, feeBuilder.Amount)
+	case exchange.InternationalBankDepositFee:
+		fee = getDepositFee(feeBuilder.BankTransactionType, feeBuilder.CurrencyItem, feeBuilder.Amount)
+	case exchange.InternationalBankWithdrawalFee:
+		fee = getWithdrawalFee(feeBuilder.BankTransactionType, feeBuilder.CurrencyItem, feeBuilder.Amount)
+	}
+	if fee < 0 {
+		fee = 0
+	}
+	return fee, nil
+}
+
+// getDepositFee returns fee when performing a trade
+func calculateTradingFee(purchasePrice float64, amount float64) float64 {
+	fee := 0.0015
+	// bitflyer has fee tiers, but does not disclose them via API, so the largest has to be assumed
+	return fee * amount * purchasePrice
+}
+
+func getDepositFee(bankTransactionType exchange.InternationalBankTransactionType, currency string, amount float64) (fee float64) {
+	switch bankTransactionType {
+	case exchange.WireTransfer:
+		switch currency {
+		case symbol.JPY:
+			fee = 324
+		}
+	}
+	return fee
+}
+
+func getWithdrawalFee(bankTransactionType exchange.InternationalBankTransactionType, currency string, amount float64) (fee float64) {
+	switch bankTransactionType {
+	case exchange.WireTransfer:
+		switch currency {
+		case symbol.JPY:
+			if amount < 30000 {
+				fee = 540
+			} else {
+				fee = 756
+			}
+		}
+	}
+	return fee
 }

@@ -244,3 +244,18 @@ func (a *ANX) WithdrawFiatExchangeFunds(currency pair.CurrencyItem, amount float
 func (a *ANX) WithdrawFiatExchangeFundsToInternationalBank(currency pair.CurrencyItem, amount float64) (string, error) {
 	return "", errors.New("not yet implemented")
 }
+
+// GetWebsocket returns a pointer to the exchange websocket
+func (a *ANX) GetWebsocket() (*exchange.Websocket, error) {
+	return nil, errors.New("not yet implemented")
+}
+
+// GetFeeByType returns an estimate of fee based on type of transaction
+func (a *ANX) GetFeeByType(feeBuilder exchange.FeeBuilder) (float64, error) {
+	return a.GetFee(feeBuilder)
+}
+
+// GetWithdrawCapabilities returns the types of withdrawal methods permitted by the exchange
+func (a *ANX) GetWithdrawCapabilities() uint32 {
+	return a.GetWithdrawPermissions()
+}

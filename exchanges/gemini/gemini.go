@@ -40,6 +40,7 @@ const (
 	geminiNewAddress         = "newAddress"
 	geminiWithdraw           = "withdraw/"
 	geminiHeartbeat          = "heartbeat"
+	geminiVolume             = "notionalvolume"
 
 	// gemini limit rates
 	geminiAuthRate   = 600
@@ -100,8 +101,8 @@ func (g *Gemini) SetDefaults() {
 	g.Name = "Gemini"
 	g.Enabled = false
 	g.Verbose = false
-	g.Websocket = false
 	g.RESTPollingDelay = 10
+	g.APIWithdrawPermissions = exchange.AutoWithdrawCryptoWithAPIPermission | exchange.AutoWithdrawCryptoWithSetup | exchange.WithdrawFiatViaWebsiteOnly
 	g.RequestCurrencyPairFormat.Delimiter = ""
 	g.RequestCurrencyPairFormat.Uppercase = true
 	g.ConfigCurrencyPairFormat.Delimiter = ""
@@ -109,7 +110,13 @@ func (g *Gemini) SetDefaults() {
 	g.AssetTypes = []string{ticker.Spot}
 	g.SupportsAutoPairUpdating = true
 	g.SupportsRESTTickerBatching = false
-	g.Requester = request.New(g.Name, request.NewRateLimit(time.Minute, geminiAuthRate), request.NewRateLimit(time.Minute, geminiUnauthRate), common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
+	g.Requester = request.New(g.Name,
+		request.NewRateLimit(time.Minute, geminiAuthRate),
+		request.NewRateLimit(time.Minute, geminiUnauthRate),
+		common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
+	g.APIUrlDefault = geminiAPIURL
+	g.APIUrl = g.APIUrlDefault
+	g.WebsocketInit()
 }
 
 // Setup sets exchange configuration parameters
@@ -124,15 +131,10 @@ func (g *Gemini) Setup(exch config.ExchangeConfig) {
 		g.SetHTTPClientUserAgent(exch.HTTPUserAgent)
 		g.RESTPollingDelay = exch.RESTPollingDelay
 		g.Verbose = exch.Verbose
-		g.Websocket = exch.Websocket
 		g.BaseCurrencies = common.SplitStrings(exch.BaseCurrencies, ",")
 		g.AvailablePairs = common.SplitStrings(exch.AvailablePairs, ",")
 		g.EnabledPairs = common.SplitStrings(exch.EnabledPairs, ",")
-		if exch.UseSandbox {
-			g.APIUrl = geminiSandboxAPIURL
-		} else {
-			g.APIUrl = geminiAPIURL
-		}
+
 		err := g.SetCurrencyPairFormat()
 		if err != nil {
 			log.Fatal(err)
@@ -142,6 +144,17 @@ func (g *Gemini) Setup(exch config.ExchangeConfig) {
 			log.Fatal(err)
 		}
 		err = g.SetAutoPairDefaults()
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = g.SetAPIURL(exch)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if exch.UseSandbox {
+			g.APIUrl = geminiSandboxAPIURL
+		}
+		err = g.SetClientProxyAddress(exch.ProxyAddress)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -189,8 +202,13 @@ func (g *Gemini) GetTicker(currencyPair string) (Ticker, error) {
 	if common.StringContains(currencyPair, "USD") {
 		ticker.Volume.USD, _ = strconv.ParseFloat(resp.Volume["USD"].(string), 64)
 	} else {
-		ticker.Volume.ETH, _ = strconv.ParseFloat(resp.Volume["ETH"].(string), 64)
-		ticker.Volume.BTC, _ = strconv.ParseFloat(resp.Volume["BTC"].(string), 64)
+		if resp.Volume["ETH"] != nil {
+			ticker.Volume.ETH, _ = strconv.ParseFloat(resp.Volume["ETH"].(string), 64)
+		}
+
+		if resp.Volume["BTC"] != nil {
+			ticker.Volume.BTC, _ = strconv.ParseFloat(resp.Volume["BTC"].(string), 64)
+		}
 	}
 
 	time, _ := resp.Volume["timestamp"].(float64)
@@ -373,6 +391,14 @@ func (g *Gemini) GetTradeHistory(currencyPair string, timestamp int64) ([]TradeH
 		g.SendAuthenticatedHTTPRequest("POST", geminiMyTrades, request, &response)
 }
 
+// GetNotionalVolume returns  the volume in price currency that has been traded across all pairs over a period of 30 days
+func (g *Gemini) GetNotionalVolume() (NotionalVolume, error) {
+	response := NotionalVolume{}
+
+	return response,
+		g.SendAuthenticatedHTTPRequest("POST", geminiVolume, nil, &response)
+}
+
 // GetTradeVolume returns a multi-arrayed volume response
 func (g *Gemini) GetTradeVolume() ([][]TradeVolume, error) {
 	response := [][]TradeVolume{}
@@ -479,4 +505,38 @@ func (g *Gemini) SendAuthenticatedHTTPRequest(method, path string, params map[st
 	headers["X-GEMINI-SIGNATURE"] = common.HexEncodeToString(hmac)
 
 	return g.SendPayload(method, g.APIUrl+"/v1/"+path, headers, strings.NewReader(""), result, true, g.Verbose)
+}
+
+// GetFee returns an estimate of fee based on type of transaction
+func (g *Gemini) GetFee(feeBuilder exchange.FeeBuilder) (float64, error) {
+	var fee float64
+	switch feeBuilder.FeeType {
+	case exchange.CryptocurrencyTradeFee:
+		notionVolume, err := g.GetNotionalVolume()
+		if err != nil {
+			return 0, err
+		}
+		fee = calculateTradingFee(notionVolume, feeBuilder.PurchasePrice, feeBuilder.Amount, feeBuilder.IsMaker)
+	case exchange.CryptocurrencyWithdrawalFee:
+		// TODO: no free transactions after 10; Need database to know how many trades have been done
+		// Could do via trade history, but would require analysis of response and dates to determine level of fee
+	case exchange.InternationalBankWithdrawalFee:
+		fee = 0
+	}
+	if fee < 0 {
+		fee = 0
+	}
+
+	return fee, nil
+}
+
+func calculateTradingFee(notionVolume NotionalVolume, purchasePrice, amount float64, isMaker bool) float64 {
+	var volumeFee float64
+	if isMaker {
+		volumeFee = (float64(notionVolume.MakerFee) / 100)
+	} else {
+		volumeFee = (float64(notionVolume.TakerFee) / 100)
+	}
+
+	return volumeFee * amount * purchasePrice
 }

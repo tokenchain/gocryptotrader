@@ -24,13 +24,9 @@ func (c *COINUT) Start(wg *sync.WaitGroup) {
 // Run implements the COINUT wrapper
 func (c *COINUT) Run() {
 	if c.Verbose {
-		log.Printf("%s Websocket: %s. (url: %s).\n", c.GetName(), common.IsEnabled(c.Websocket), coinutWebsocketURL)
+		log.Printf("%s Websocket: %s. (url: %s).\n", c.GetName(), common.IsEnabled(c.Websocket.IsEnabled()), coinutWebsocketURL)
 		log.Printf("%s polling delay: %ds.\n", c.GetName(), c.RESTPollingDelay)
 		log.Printf("%s %d currencies enabled: %s.\n", c.GetName(), len(c.EnabledPairs), c.EnabledPairs)
-	}
-
-	if c.Websocket {
-		go c.WebsocketClient()
 	}
 
 	exchangeProducts, err := c.GetInstruments()
@@ -192,4 +188,19 @@ func (c *COINUT) WithdrawFiatExchangeFunds(currency pair.CurrencyItem, amount fl
 // withdrawal is submitted
 func (c *COINUT) WithdrawFiatExchangeFundsToInternationalBank(currency pair.CurrencyItem, amount float64) (string, error) {
 	return "", errors.New("not yet implemented")
+}
+
+// GetWebsocket returns a pointer to the exchange websocket
+func (c *COINUT) GetWebsocket() (*exchange.Websocket, error) {
+	return c.Websocket, nil
+}
+
+// GetFeeByType returns an estimate of fee based on type of transaction
+func (c *COINUT) GetFeeByType(feeBuilder exchange.FeeBuilder) (float64, error) {
+	return c.GetFee(feeBuilder)
+}
+
+// GetWithdrawCapabilities returns the types of withdrawal methods permitted by the exchange
+func (c *COINUT) GetWithdrawCapabilities() uint32 {
+	return c.GetWithdrawPermissions()
 }

@@ -45,8 +45,8 @@ func (g *Gateio) SetDefaults() {
 	g.Name = "GateIO"
 	g.Enabled = false
 	g.Verbose = false
-	g.Websocket = false
 	g.RESTPollingDelay = 10
+	g.APIWithdrawPermissions = exchange.AutoWithdrawCrypto
 	g.RequestCurrencyPairFormat.Delimiter = "_"
 	g.RequestCurrencyPairFormat.Uppercase = false
 	g.ConfigCurrencyPairFormat.Delimiter = "_"
@@ -54,7 +54,15 @@ func (g *Gateio) SetDefaults() {
 	g.AssetTypes = []string{ticker.Spot}
 	g.SupportsAutoPairUpdating = true
 	g.SupportsRESTTickerBatching = true
-	g.Requester = request.New(g.Name, request.NewRateLimit(time.Second*10, gateioAuthRate), request.NewRateLimit(time.Second*10, gateioUnauthRate), common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
+	g.Requester = request.New(g.Name,
+		request.NewRateLimit(time.Second*10, gateioAuthRate),
+		request.NewRateLimit(time.Second*10, gateioUnauthRate),
+		common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
+	g.APIUrlDefault = gateioTradeURL
+	g.APIUrl = g.APIUrlDefault
+	g.APIUrlSecondaryDefault = gateioMarketURL
+	g.APIUrlSecondary = g.APIUrlSecondaryDefault
+	g.WebsocketInit()
 }
 
 // Setup sets user configuration
@@ -70,7 +78,6 @@ func (g *Gateio) Setup(exch config.ExchangeConfig) {
 		g.SetHTTPClientUserAgent(exch.HTTPUserAgent)
 		g.RESTPollingDelay = exch.RESTPollingDelay
 		g.Verbose = exch.Verbose
-		g.Websocket = exch.Websocket
 		g.BaseCurrencies = common.SplitStrings(exch.BaseCurrencies, ",")
 		g.AvailablePairs = common.SplitStrings(exch.AvailablePairs, ",")
 		g.EnabledPairs = common.SplitStrings(exch.EnabledPairs, ",")
@@ -86,6 +93,14 @@ func (g *Gateio) Setup(exch config.ExchangeConfig) {
 		if err != nil {
 			log.Fatal(err)
 		}
+		err = g.SetAPIURL(exch)
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = g.SetClientProxyAddress(exch.ProxyAddress)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 }
 
@@ -93,7 +108,7 @@ func (g *Gateio) Setup(exch config.ExchangeConfig) {
 func (g *Gateio) GetSymbols() ([]string, error) {
 	var result []string
 
-	url := fmt.Sprintf("%s/%s/%s", gateioMarketURL, gateioAPIVersion, gateioSymbol)
+	url := fmt.Sprintf("%s/%s/%s", g.APIUrlSecondary, gateioAPIVersion, gateioSymbol)
 
 	err := g.SendHTTPRequest(url, &result)
 	if err != nil {
@@ -110,7 +125,7 @@ func (g *Gateio) GetMarketInfo() (MarketInfoResponse, error) {
 		Pairs  []interface{} `json:"pairs"`
 	}
 
-	url := fmt.Sprintf("%s/%s/%s", gateioMarketURL, gateioAPIVersion, gateioMarketInfo)
+	url := fmt.Sprintf("%s/%s/%s", g.APIUrlSecondary, gateioAPIVersion, gateioMarketInfo)
 
 	var res response
 	var result MarketInfoResponse
@@ -151,7 +166,7 @@ func (g *Gateio) GetLatestSpotPrice(symbol string) (float64, error) {
 // GetTicker returns a ticker for the supplied symbol
 // updated every 10 seconds
 func (g *Gateio) GetTicker(symbol string) (TickerResponse, error) {
-	url := fmt.Sprintf("%s/%s/%s/%s", gateioMarketURL, gateioAPIVersion, gateioTicker, symbol)
+	url := fmt.Sprintf("%s/%s/%s/%s", g.APIUrlSecondary, gateioAPIVersion, gateioTicker, symbol)
 
 	var res TickerResponse
 	err := g.SendHTTPRequest(url, &res)
@@ -163,7 +178,7 @@ func (g *Gateio) GetTicker(symbol string) (TickerResponse, error) {
 
 // GetTickers returns tickers for all symbols
 func (g *Gateio) GetTickers() (map[string]TickerResponse, error) {
-	url := fmt.Sprintf("%s/%s/%s", gateioMarketURL, gateioAPIVersion, gateioTickers)
+	url := fmt.Sprintf("%s/%s/%s", g.APIUrlSecondary, gateioAPIVersion, gateioTickers)
 
 	resp := make(map[string]TickerResponse)
 	err := g.SendHTTPRequest(url, &resp)
@@ -175,7 +190,7 @@ func (g *Gateio) GetTickers() (map[string]TickerResponse, error) {
 
 // GetOrderbook returns the orderbook data for a suppled symbol
 func (g *Gateio) GetOrderbook(symbol string) (Orderbook, error) {
-	url := fmt.Sprintf("%s/%s/%s/%s", gateioMarketURL, gateioAPIVersion, gateioOrderbook, symbol)
+	url := fmt.Sprintf("%s/%s/%s/%s", g.APIUrlSecondary, gateioAPIVersion, gateioOrderbook, symbol)
 
 	var resp OrderbookResponse
 	err := g.SendHTTPRequest(url, &resp)
@@ -188,6 +203,10 @@ func (g *Gateio) GetOrderbook(symbol string) (Orderbook, error) {
 	}
 
 	var ob Orderbook
+
+	if len(resp.Asks) == 0 {
+		return ob, errors.New("asks are empty")
+	}
 
 	// Asks are in reverse order
 	for x := len(resp.Asks) - 1; x != 0; x-- {
@@ -204,6 +223,10 @@ func (g *Gateio) GetOrderbook(symbol string) (Orderbook, error) {
 		}
 
 		ob.Asks = append(ob.Asks, OrderbookItem{Price: price, Amount: amount})
+	}
+
+	if len(resp.Bids) == 0 {
+		return ob, errors.New("bids are empty")
 	}
 
 	for x := range resp.Bids {
@@ -229,7 +252,14 @@ func (g *Gateio) GetOrderbook(symbol string) (Orderbook, error) {
 
 // GetSpotKline returns kline data for the most recent time period
 func (g *Gateio) GetSpotKline(arg KlinesRequestParams) ([]*KLineResponse, error) {
-	url := fmt.Sprintf("%s/%s/%s/%s?group_sec=%d&range_hour=%d", gateioMarketURL, gateioAPIVersion, gateioKline, arg.Symbol, arg.GroupSec, arg.HourSize)
+	url := fmt.Sprintf("%s/%s/%s/%s?group_sec=%d&range_hour=%d",
+		g.APIUrlSecondary,
+		gateioAPIVersion,
+		gateioKline,
+		arg.Symbol,
+		arg.GroupSec,
+		arg.HourSize)
+
 	var rawKlines map[string]interface{}
 	err := g.SendHTTPRequest(url, &rawKlines)
 	if err != nil {
@@ -368,9 +398,47 @@ func (g *Gateio) SendAuthenticatedHTTPRequest(method, endpoint, param string, re
 	headers["key"] = g.APIKey
 
 	hmac := common.GetHMAC(common.HashSHA512, []byte(param), []byte(g.APISecret))
-	headers["sign"] = common.ByteArrayToString(hmac)
+	headers["sign"] = common.HexEncodeToString(hmac)
 
-	url := fmt.Sprintf("%s/%s/%s", gateioTradeURL, gateioAPIVersion, endpoint)
+	url := fmt.Sprintf("%s/%s/%s", g.APIUrl, gateioAPIVersion, endpoint)
 
 	return g.SendPayload(method, url, headers, strings.NewReader(param), result, true, g.Verbose)
+}
+
+// GetFee returns an estimate of fee based on type of transaction
+func (g *Gateio) GetFee(feeBuilder exchange.FeeBuilder) (fee float64, err error) {
+	switch feeBuilder.FeeType {
+	case exchange.CryptocurrencyTradeFee:
+		feePairs, err := g.GetMarketInfo()
+		if err != nil {
+			return 0, err
+		}
+		currencyPair := feeBuilder.FirstCurrency + feeBuilder.Delimiter + feeBuilder.SecondCurrency
+		var feeForPair float64
+		for _, i := range feePairs.Pairs {
+			if strings.EqualFold(currencyPair, i.Symbol) {
+				feeForPair = i.Fee
+			}
+		}
+		if feeForPair == 0 {
+			return 0, fmt.Errorf("Currency: '%s' failed to find fee data", currencyPair)
+		}
+		fee = calculateTradingFee(feeForPair, feeBuilder.PurchasePrice, feeBuilder.Amount)
+	case exchange.CryptocurrencyWithdrawalFee:
+		fee = getCryptocurrencyWithdrawalFee(feeBuilder.FirstCurrency)
+	}
+
+	if fee < 0 {
+		fee = 0
+	}
+
+	return fee, nil
+}
+
+func calculateTradingFee(feeForPair, purchasePrice, amount float64) float64 {
+	return (feeForPair / 100) * purchasePrice * amount
+}
+
+func getCryptocurrencyWithdrawalFee(currency string) float64 {
+	return WithdrawalFees[currency]
 }

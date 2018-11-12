@@ -1,5 +1,7 @@
 package btcmarkets
 
+import "github.com/thrasher-/gocryptotrader/currency/symbol"
+
 // Response is the genralized response type
 type Response struct {
 	Success      bool   `json:"success"`
@@ -15,6 +17,12 @@ type Response struct {
 	ClientRequestID string  `json:"clientRequestId"`
 	Orders          []Order `json:"orders"`
 	Status          string  `json:"status"`
+}
+
+// Market holds a tradable market instrument
+type Market struct {
+	Instrument string `json:"instrument"`
+	Currency   string `json:"currency"`
 }
 
 // Ticker holds ticker information
@@ -43,6 +51,15 @@ type Trade struct {
 	Amount  float64 `json:"amount"`
 	Price   float64 `json:"price"`
 	Date    int64   `json:"date"`
+}
+
+// 30 day trade volume
+type TradingFee struct {
+	Success        bool    `json:"success"`
+	ErrorCode      int     `json:"errorCode"`
+	ErrorMessage   string  `json:"errorMessage"`
+	TradingFeeRate float64 `json:"tradingfeerate"`
+	Volume30Day    float64 `json:"volume30day"`
 }
 
 // OrderToGo holds order information to be sent to the exchange
@@ -105,4 +122,18 @@ type WithdrawRequestAUD struct {
 	AccountNumber string `json:"accountNumber"`
 	BankName      string `json:"bankName"`
 	BSBNumber     string `json:"bsbNumber"`
+}
+
+// WithdrawalFees the large list of predefined withdrawal fees
+// Prone to change
+var WithdrawalFees = map[string]float64{
+	symbol.AUD:  0,
+	symbol.BTC:  0.001,
+	symbol.ETH:  0.001,
+	symbol.ETC:  0.001,
+	symbol.LTC:  0.0001,
+	symbol.XRP:  0.15,
+	symbol.BCH:  0.0001,
+	symbol.OMG:  0.15,
+	symbol.POWR: 5,
 }

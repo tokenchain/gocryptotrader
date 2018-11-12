@@ -1,11 +1,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"sync"
 	"time"
 
+	"github.com/thrasher-/gocryptotrader/common"
 	"github.com/thrasher-/gocryptotrader/currency"
 	"github.com/thrasher-/gocryptotrader/currency/pair"
 	"github.com/thrasher-/gocryptotrader/currency/symbol"
@@ -108,6 +110,7 @@ func printOrderbookSummary(result orderbook.Base, p pair.CurrencyPair, assetType
 			err)
 		return
 	}
+
 	bidsAmount, bidsValue := result.CalculateTotalBids()
 	asksAmount, asksValue := result.CalculateTotalAsks()
 
@@ -157,7 +160,6 @@ func printOrderbookSummary(result orderbook.Base, p pair.CurrencyPair, assetType
 			)
 		}
 	}
-
 }
 
 func relayWebsocketEvent(result interface{}, event, assetType, exchangeName string) {
@@ -275,5 +277,186 @@ func OrderbookUpdaterRoutine() {
 		wg.Wait()
 		log.Println("All enabled currency orderbooks fetched.")
 		time.Sleep(time.Second * 10)
+	}
+}
+
+// WebsocketRoutine Initial routine management system for websocket
+func WebsocketRoutine(verbose bool) {
+	log.Println("Connecting exchange websocket services...")
+
+	for i := range bot.exchanges {
+		go func(i int) {
+			if verbose {
+				log.Printf("Establishing websocket connection for %s",
+					bot.exchanges[i].GetName())
+			}
+
+			ws, err := bot.exchanges[i].GetWebsocket()
+			if err != nil {
+				return
+			}
+
+			// Data handler routine
+			go WebsocketDataHandler(ws, verbose)
+
+			err = ws.Connect()
+			if err != nil {
+				switch err.Error() {
+				case exchange.WebsocketNotEnabled:
+					// Store in memory if enabled in future
+				default:
+					log.Println(err)
+				}
+			}
+		}(i)
+	}
+}
+
+var shutdowner = make(chan struct{}, 1)
+var wg sync.WaitGroup
+
+// Websocketshutdown shuts down the exchange routines and then shuts down
+// governing routines
+func Websocketshutdown(ws *exchange.Websocket) error {
+	err := ws.Shutdown() // shutdown routines on the exchange
+	if err != nil {
+		log.Fatalf("routines.go error - failed to shutodwn %s", err)
+	}
+
+	timer := time.NewTimer(5 * time.Second)
+	c := make(chan struct{}, 1)
+
+	go func(c chan struct{}) {
+		close(shutdowner)
+		wg.Wait()
+		c <- struct{}{}
+	}(c)
+
+	select {
+	case <-timer.C:
+		return errors.New("routines.go error - failed to shutdown routines")
+
+	case <-c:
+		return nil
+	}
+}
+
+// streamDiversion is a diversion switch from websocket to REST or other
+// alternative feed
+func streamDiversion(ws *exchange.Websocket, verbose bool) {
+	wg.Add(1)
+	defer wg.Done()
+
+	for {
+		select {
+		case <-shutdowner:
+			return
+
+		case <-ws.Connected:
+			if verbose {
+				log.Printf("exchange %s websocket feed connected", ws.GetName())
+			}
+
+		case <-ws.Disconnected:
+			if verbose {
+				log.Printf("exchange %s websocket feed disconnected, switching to REST functionality",
+					ws.GetName())
+			}
+		}
+	}
+}
+
+// WebsocketDataHandler handles websocket data coming from a websocket feed
+// associated with an exchange
+func WebsocketDataHandler(ws *exchange.Websocket, verbose bool) {
+	wg.Add(1)
+	defer wg.Done()
+
+	go streamDiversion(ws, verbose)
+
+	for {
+		select {
+		case <-shutdowner:
+			return
+
+		case data := <-ws.DataHandler:
+			switch data.(type) {
+			case string:
+				switch data.(string) {
+				case exchange.WebsocketNotEnabled:
+					if verbose {
+						log.Printf("routines.go warning - exchange %s weboscket not enabled",
+							ws.GetName())
+					}
+
+				default:
+					log.Println(data.(string))
+				}
+
+			case error:
+				switch {
+				case common.StringContains(data.(error).Error(), "close 1006"):
+					go WebsocketReconnect(ws, verbose)
+					continue
+				default:
+					log.Fatalf("routines.go exchange %s websocket error - %s", ws.GetName(), data)
+				}
+
+			case exchange.TradeData:
+				// Trade Data
+				if verbose {
+					log.Println("Websocket trades Updated:   ", data.(exchange.TradeData))
+				}
+
+			case exchange.TickerData:
+				// Ticker data
+				if verbose {
+					log.Println("Websocket Ticker Updated:   ", data.(exchange.TickerData))
+				}
+			case exchange.KlineData:
+				// Kline data
+				if verbose {
+					log.Println("Websocket Kline Updated:    ", data.(exchange.KlineData))
+				}
+			case exchange.WebsocketOrderbookUpdate:
+				// Orderbook data
+				if verbose {
+					log.Println("Websocket Orderbook Updated:", data.(exchange.WebsocketOrderbookUpdate))
+				}
+			default:
+				if verbose {
+					log.Println("Websocket Unknown type:     ", data)
+				}
+			}
+		}
+	}
+}
+
+// WebsocketReconnect tries to reconnect to a websocket stream
+func WebsocketReconnect(ws *exchange.Websocket, verbose bool) {
+	if verbose {
+		log.Printf("Websocket reconnection requested for %s", ws.GetName())
+	}
+
+	err := ws.Shutdown()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	wg.Add(1)
+	defer wg.Done()
+
+	ticker := time.NewTicker(3 * time.Second)
+	for {
+		select {
+		case <-shutdowner:
+			return
+
+		case <-ticker.C:
+			err = ws.Connect()
+			if err == nil {
+				return
+			}
+		}
 	}
 }

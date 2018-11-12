@@ -11,6 +11,7 @@ import (
 
 	"github.com/thrasher-/gocryptotrader/common"
 	"github.com/thrasher-/gocryptotrader/config"
+	"github.com/thrasher-/gocryptotrader/currency/symbol"
 	exchange "github.com/thrasher-/gocryptotrader/exchanges"
 	"github.com/thrasher-/gocryptotrader/exchanges/request"
 	"github.com/thrasher-/gocryptotrader/exchanges/ticker"
@@ -53,9 +54,9 @@ func (w *WEX) SetDefaults() {
 	w.Enabled = false
 	w.Fee = 0.2
 	w.Verbose = false
-	w.Websocket = false
 	w.RESTPollingDelay = 10
 	w.Ticker = make(map[string]Ticker)
+	w.APIWithdrawPermissions = exchange.AutoWithdrawCryptoWithAPIPermission
 	w.RequestCurrencyPairFormat.Delimiter = "_"
 	w.RequestCurrencyPairFormat.Uppercase = false
 	w.RequestCurrencyPairFormat.Separator = "-"
@@ -64,7 +65,15 @@ func (w *WEX) SetDefaults() {
 	w.AssetTypes = []string{ticker.Spot}
 	w.SupportsAutoPairUpdating = true
 	w.SupportsRESTTickerBatching = true
-	w.Requester = request.New(w.Name, request.NewRateLimit(time.Second, wexAuthRate), request.NewRateLimit(time.Second, wexUnauthRate), common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
+	w.Requester = request.New(w.Name,
+		request.NewRateLimit(time.Second, wexAuthRate),
+		request.NewRateLimit(time.Second, wexUnauthRate),
+		common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
+	w.APIUrlDefault = wexAPIPublicURL
+	w.APIUrl = w.APIUrlDefault
+	w.APIUrlSecondaryDefault = wexAPIPrivateURL
+	w.APIUrlSecondary = w.APIUrlSecondaryDefault
+	w.WebsocketInit()
 }
 
 // Setup sets exchange configuration parameters for WEX
@@ -79,7 +88,6 @@ func (w *WEX) Setup(exch config.ExchangeConfig) {
 		w.SetHTTPClientUserAgent(exch.HTTPUserAgent)
 		w.RESTPollingDelay = exch.RESTPollingDelay
 		w.Verbose = exch.Verbose
-		w.Websocket = exch.Websocket
 		w.BaseCurrencies = common.SplitStrings(exch.BaseCurrencies, ",")
 		w.AvailablePairs = common.SplitStrings(exch.AvailablePairs, ",")
 		w.EnabledPairs = common.SplitStrings(exch.EnabledPairs, ",")
@@ -92,6 +100,14 @@ func (w *WEX) Setup(exch config.ExchangeConfig) {
 			log.Fatal(err)
 		}
 		err = w.SetAutoPairDefaults()
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = w.SetAPIURL(exch)
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = w.SetClientProxyAddress(exch.ProxyAddress)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -113,15 +129,10 @@ func (w *WEX) GetTradablePairs() ([]string, error) {
 	return currencies, nil
 }
 
-// GetFee returns the exchange fee
-func (w *WEX) GetFee() float64 {
-	return w.Fee
-}
-
 // GetInfo returns the WEX info
 func (w *WEX) GetInfo() (Info, error) {
 	resp := Info{}
-	req := fmt.Sprintf("%s/%s/%s/", wexAPIPublicURL, wexAPIPublicVersion, wexInfo)
+	req := fmt.Sprintf("%s/%s/%s/", w.APIUrl, wexAPIPublicVersion, wexInfo)
 
 	return resp, w.SendHTTPRequest(req, &resp)
 }
@@ -133,7 +144,7 @@ func (w *WEX) GetTicker(symbol string) (map[string]Ticker, error) {
 	}
 
 	response := Response{}
-	req := fmt.Sprintf("%s/%s/%s/%s", wexAPIPublicURL, wexAPIPublicVersion, wexTicker, symbol)
+	req := fmt.Sprintf("%s/%s/%s/%s", w.APIUrl, wexAPIPublicVersion, wexTicker, symbol)
 
 	return response.Data, w.SendHTTPRequest(req, &response.Data)
 }
@@ -145,7 +156,7 @@ func (w *WEX) GetDepth(symbol string) (Orderbook, error) {
 	}
 
 	response := Response{}
-	req := fmt.Sprintf("%s/%s/%s/%s", wexAPIPublicURL, wexAPIPublicVersion, wexDepth, symbol)
+	req := fmt.Sprintf("%s/%s/%s/%s", w.APIUrl, wexAPIPublicVersion, wexDepth, symbol)
 
 	return response.Data[symbol], w.SendHTTPRequest(req, &response.Data)
 }
@@ -157,7 +168,7 @@ func (w *WEX) GetTrades(symbol string) ([]Trades, error) {
 	}
 
 	response := Response{}
-	req := fmt.Sprintf("%s/%s/%s/%s", wexAPIPublicURL, wexAPIPublicVersion, wexTrades, symbol)
+	req := fmt.Sprintf("%s/%s/%s/%s", w.APIUrl, wexAPIPublicVersion, wexTrades, symbol)
 
 	return response.Data[symbol], w.SendHTTPRequest(req, &response.Data)
 }
@@ -350,7 +361,8 @@ func (w *WEX) SendHTTPRequest(path string, result interface{}) error {
 // SendAuthenticatedHTTPRequest sends an authenticated HTTP request to WEX
 func (w *WEX) SendAuthenticatedHTTPRequest(method string, values url.Values, result interface{}) (err error) {
 	if !w.AuthenticatedAPISupport {
-		return fmt.Errorf(exchange.WarningAuthenticatedRequestWithoutCredentialsSet, w.Name)
+		return fmt.Errorf(exchange.WarningAuthenticatedRequestWithoutCredentialsSet,
+			w.Name)
 	}
 
 	if w.Nonce.Get() == 0 {
@@ -366,7 +378,7 @@ func (w *WEX) SendAuthenticatedHTTPRequest(method string, values url.Values, res
 
 	if w.Verbose {
 		log.Printf("Sending POST request to %s calling method %s with params %s\n",
-			wexAPIPrivateURL,
+			w.APIUrlSecondary,
 			method,
 			encoded)
 	}
@@ -376,5 +388,68 @@ func (w *WEX) SendAuthenticatedHTTPRequest(method string, values url.Values, res
 	headers["Sign"] = common.HexEncodeToString(hmac)
 	headers["Content-Type"] = "application/x-www-form-urlencoded"
 
-	return w.SendPayload("POST", wexAPIPrivateURL, headers, strings.NewReader(encoded), result, true, w.Verbose)
+	return w.SendPayload("POST",
+		w.APIUrlSecondary,
+		headers,
+		strings.NewReader(encoded),
+		result,
+		true,
+		w.Verbose)
+}
+
+// GetFee returns an estimate of fee based on type of transaction
+func (w *WEX) GetFee(feeBuilder exchange.FeeBuilder) (float64, error) {
+	var fee float64
+	switch feeBuilder.FeeType {
+	case exchange.CryptocurrencyTradeFee:
+		info, err := w.GetInfo()
+		if err != nil {
+			return 0, err
+		}
+		currency := feeBuilder.FirstCurrency + feeBuilder.Delimiter + feeBuilder.SecondCurrency
+		fee = calculateTradingFee(info, currency, feeBuilder.PurchasePrice, feeBuilder.Amount)
+	case exchange.CryptocurrencyWithdrawalFee:
+		fee = getWithdrawalFee(feeBuilder.FirstCurrency)
+	case exchange.InternationalBankDepositFee:
+		fee = getInternationalBankDepositFee(feeBuilder.CurrencyItem, feeBuilder.Amount, feeBuilder.BankTransactionType)
+	}
+	if fee < 0 {
+		fee = 0
+	}
+
+	return fee, nil
+}
+
+func calculateTradingFee(info Info, currency string, purchasePrice, amount float64) (fee float64) {
+	fee = info.Pairs[common.StringToLower(currency)].Fee
+	return (fee / 100) * amount * purchasePrice
+}
+
+func getWithdrawalFee(currency string) float64 {
+	return WithdrawalFees[currency]
+}
+
+func getInternationalBankDepositFee(currency string, amount float64, bankTransactionType exchange.InternationalBankTransactionType) float64 {
+	var fee float64
+
+	switch bankTransactionType {
+	case exchange.WireTransfer:
+		fallthrough
+	case exchange.WesternUnion:
+		switch currency {
+		case symbol.USD:
+			fee = 0.065 * amount
+		}
+	case exchange.MoneyGram:
+		switch currency {
+		case symbol.USD:
+			fee = 0.065 * amount
+		}
+	case exchange.Contact:
+		switch currency {
+		case symbol.USD:
+			fee = 0.065 * amount
+		}
+	}
+	return fee
 }

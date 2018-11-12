@@ -217,3 +217,19 @@ func (b *Bittrex) WithdrawFiatExchangeFunds(currency pair.CurrencyItem, amount f
 func (b *Bittrex) WithdrawFiatExchangeFundsToInternationalBank(currency pair.CurrencyItem, amount float64) (string, error) {
 	return "", errors.New("not yet implemented")
 }
+
+// GetWebsocket returns a pointer to the exchange websocket
+func (b *Bittrex) GetWebsocket() (*exchange.Websocket, error) {
+	return nil, errors.New("not yet implemented")
+}
+
+// GetFeeByType returns an estimate of fee based on type of transaction
+func (b *Bittrex) GetFeeByType(feeBuilder exchange.FeeBuilder) (float64, error) {
+	return b.GetFee(feeBuilder)
+
+}
+
+// GetWithdrawCapabilities returns the types of withdrawal methods permitted by the exchange
+func (b *Bittrex) GetWithdrawCapabilities() uint32 {
+	return b.GetWithdrawPermissions()
+}

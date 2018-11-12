@@ -20,7 +20,6 @@ import (
 type Bitmex struct {
 	exchange.Base
 	WebsocketConn *websocket.Conn
-	shutdown      *Shutdown
 }
 
 const (
@@ -114,8 +113,8 @@ func (b *Bitmex) SetDefaults() {
 	b.Name = "Bitmex"
 	b.Enabled = false
 	b.Verbose = false
-	b.Websocket = false
 	b.RESTPollingDelay = 10
+	b.APIWithdrawPermissions = exchange.AutoWithdrawCryptoWithAPIPermission | exchange.WithdrawCryptoWithEmail | exchange.WithdrawCryptoWith2FA
 	b.RequestCurrencyPairFormat.Delimiter = ""
 	b.RequestCurrencyPairFormat.Uppercase = true
 	b.ConfigCurrencyPairFormat.Delimiter = ""
@@ -125,7 +124,10 @@ func (b *Bitmex) SetDefaults() {
 		request.NewRateLimit(time.Second, bitmexAuthRate),
 		request.NewRateLimit(time.Second, bitmexUnauthRate),
 		common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
-	b.shutdown = b.NewRoutineManagement()
+	b.APIUrlDefault = bitmexAPIURL
+	b.APIUrl = b.APIUrlDefault
+	b.SupportsAutoPairUpdating = true
+	b.WebsocketInit()
 }
 
 // Setup takes in the supplied exchange configuration details and sets params
@@ -138,7 +140,7 @@ func (b *Bitmex) Setup(exch config.ExchangeConfig) {
 		b.SetAPIKeys(exch.APIKey, exch.APISecret, "", false)
 		b.RESTPollingDelay = exch.RESTPollingDelay
 		b.Verbose = exch.Verbose
-		b.Websocket = exch.Websocket
+		b.Websocket.SetEnabled(exch.Websocket)
 		b.BaseCurrencies = common.SplitStrings(exch.BaseCurrencies, ",")
 		b.AvailablePairs = common.SplitStrings(exch.AvailablePairs, ",")
 		b.EnabledPairs = common.SplitStrings(exch.EnabledPairs, ",")
@@ -147,6 +149,26 @@ func (b *Bitmex) Setup(exch config.ExchangeConfig) {
 			log.Fatal(err)
 		}
 		err = b.SetAssetTypes()
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = b.SetAutoPairDefaults()
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = b.SetAPIURL(exch)
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = b.SetClientProxyAddress(exch.ProxyAddress)
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = b.WebsocketSetup(b.WsConnector,
+			exch.Name,
+			exch.Websocket,
+			bitmexWSURL,
+			exch.WebsocketURL)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -797,7 +819,7 @@ func (b *Bitmex) GetWalletSummary(currency string) ([]TransactionInfo, error) {
 // SendHTTPRequest sends an unauthenticated HTTP request
 func (b *Bitmex) SendHTTPRequest(path string, params Parameter, result interface{}) error {
 	var respCheck interface{}
-	path = bitmexAPIURL + path
+	path = b.APIUrl + path
 	if params != nil {
 		if !params.IsNil() {
 			encodedPath, err := params.ToURLVals(path)
@@ -856,7 +878,7 @@ func (b *Bitmex) SendAuthenticatedHTTPRequest(verb, path string, params Paramete
 	var respCheck interface{}
 
 	err := b.SendPayload(verb,
-		bitmexAPIURL+path,
+		b.APIUrl+path,
 		headers,
 		bytes.NewBuffer([]byte(payload)),
 		&respCheck,
@@ -890,4 +912,30 @@ func (b *Bitmex) CaptureError(resp, reType interface{}) error {
 		return err
 	}
 	return nil
+}
+
+// GetFee returns an estimate of fee based on type of transaction
+func (b *Bitmex) GetFee(feeBuilder exchange.FeeBuilder) (float64, error) {
+	var fee float64
+	var err error
+
+	switch feeBuilder.FeeType {
+	case exchange.CryptocurrencyTradeFee:
+		fee = calculateTradingFee(feeBuilder.PurchasePrice, feeBuilder.Amount, feeBuilder.IsMaker)
+	}
+	if fee < 0 {
+		fee = 0
+	}
+	return fee, err
+}
+
+// calculateTradingFee returns the fee for trading any currency on Bittrex
+func calculateTradingFee(purchasePrice float64, amount float64, isMaker bool) float64 {
+	var fee = 0.000750
+
+	if isMaker {
+		fee -= 0.000250
+	}
+
+	return fee * purchasePrice * amount
 }

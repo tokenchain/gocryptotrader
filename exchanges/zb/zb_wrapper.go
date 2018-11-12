@@ -24,7 +24,7 @@ func (z *ZB) Start(wg *sync.WaitGroup) {
 // Run implements the OKEX wrapper
 func (z *ZB) Run() {
 	if z.Verbose {
-		log.Printf("%s Websocket: %s. (url: %s).\n", z.GetName(), common.IsEnabled(z.Websocket), z.WebsocketURL)
+		log.Printf("%s Websocket: %s. (url: %s).\n", z.GetName(), common.IsEnabled(z.Websocket.IsEnabled()), z.WebsocketURL)
 		log.Printf("%s polling delay: %ds.\n", z.GetName(), z.RESTPollingDelay)
 		log.Printf("%s %d currencies enabled: %s.\n", z.GetName(), len(z.EnabledPairs), z.EnabledPairs)
 	}
@@ -183,4 +183,19 @@ func (z *ZB) WithdrawFiatExchangeFunds(currency pair.CurrencyItem, amount float6
 // withdrawal is submitted
 func (z *ZB) WithdrawFiatExchangeFundsToInternationalBank(currency pair.CurrencyItem, amount float64) (string, error) {
 	return "", errors.New("not yet implemented")
+}
+
+// GetWebsocket returns a pointer to the exchange websocket
+func (z *ZB) GetWebsocket() (*exchange.Websocket, error) {
+	return nil, errors.New("not yet implemented")
+}
+
+// GetFeeByType returns an estimate of fee based on type of transaction
+func (z *ZB) GetFeeByType(feeBuilder exchange.FeeBuilder) (float64, error) {
+	return z.GetFee(feeBuilder)
+}
+
+// GetWithdrawCapabilities returns the types of withdrawal methods permitted by the exchange
+func (z *ZB) GetWithdrawCapabilities() uint32 {
+	return z.GetWithdrawPermissions()
 }

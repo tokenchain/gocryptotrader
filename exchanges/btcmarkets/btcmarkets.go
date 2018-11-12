@@ -10,6 +10,7 @@ import (
 
 	"github.com/thrasher-/gocryptotrader/common"
 	"github.com/thrasher-/gocryptotrader/config"
+	"github.com/thrasher-/gocryptotrader/currency/symbol"
 	"github.com/thrasher-/gocryptotrader/exchanges"
 	"github.com/thrasher-/gocryptotrader/exchanges/request"
 	"github.com/thrasher-/gocryptotrader/exchanges/ticker"
@@ -19,6 +20,7 @@ const (
 	btcMarketsAPIURL            = "https://api.btcmarkets.net"
 	btcMarketsAPIVersion        = "0"
 	btcMarketsAccountBalance    = "/account/balance"
+	btcMarketsTradingFee        = "/account/%s/%s/tradingfee"
 	btcMarketsOrderCreate       = "/order/create"
 	btcMarketsOrderCancel       = "/order/cancel"
 	btcMarketsOrderHistory      = "/order/history"
@@ -54,17 +56,23 @@ func (b *BTCMarkets) SetDefaults() {
 	b.Enabled = false
 	b.Fee = 0.85
 	b.Verbose = false
-	b.Websocket = false
 	b.RESTPollingDelay = 10
 	b.Ticker = make(map[string]Ticker)
+	b.APIWithdrawPermissions = exchange.AutoWithdrawCrypto | exchange.AutoWithdrawFiat
 	b.RequestCurrencyPairFormat.Delimiter = ""
 	b.RequestCurrencyPairFormat.Uppercase = true
-	b.ConfigCurrencyPairFormat.Delimiter = ""
+	b.ConfigCurrencyPairFormat.Delimiter = "-"
 	b.ConfigCurrencyPairFormat.Uppercase = true
 	b.AssetTypes = []string{ticker.Spot}
 	b.SupportsAutoPairUpdating = true
 	b.SupportsRESTTickerBatching = false
-	b.Requester = request.New(b.Name, request.NewRateLimit(time.Second*10, btcmarketsAuthLimit), request.NewRateLimit(time.Second*10, btcmarketsUnauthLimit), common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
+	b.Requester = request.New(b.Name,
+		request.NewRateLimit(time.Second*10, btcmarketsAuthLimit),
+		request.NewRateLimit(time.Second*10, btcmarketsUnauthLimit),
+		common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
+	b.APIUrlDefault = btcMarketsAPIURL
+	b.APIUrl = b.APIUrlDefault
+	b.WebsocketInit()
 }
 
 // Setup takes in an exchange configuration and sets all parameters
@@ -79,7 +87,6 @@ func (b *BTCMarkets) Setup(exch config.ExchangeConfig) {
 		b.SetHTTPClientUserAgent(exch.HTTPUserAgent)
 		b.RESTPollingDelay = exch.RESTPollingDelay
 		b.Verbose = exch.Verbose
-		b.Websocket = exch.Websocket
 		b.BaseCurrencies = common.SplitStrings(exch.BaseCurrencies, ",")
 		b.AvailablePairs = common.SplitStrings(exch.AvailablePairs, ",")
 		b.EnabledPairs = common.SplitStrings(exch.EnabledPairs, ",")
@@ -95,12 +102,37 @@ func (b *BTCMarkets) Setup(exch config.ExchangeConfig) {
 		if err != nil {
 			log.Fatal(err)
 		}
+		err = b.SetAPIURL(exch)
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = b.SetClientProxyAddress(exch.ProxyAddress)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 }
 
-// GetFee returns the BTCMarkets fee on transactions
-func (b *BTCMarkets) GetFee() float64 {
-	return b.Fee
+// GetMarkets returns the BTCMarkets instruments
+func (b *BTCMarkets) GetMarkets() ([]Market, error) {
+	type marketsResp struct {
+		Response
+		Markets []Market `json:"markets"`
+	}
+
+	var resp marketsResp
+	path := fmt.Sprintf("%s/v2/market/active", b.APIUrl)
+
+	err := b.SendHTTPRequest(path, &resp)
+	if err != nil {
+		return nil, err
+	}
+
+	if !resp.Success {
+		return nil, fmt.Errorf("%s unable to get markets: %s", b.Name, resp.ErrorMessage)
+	}
+
+	return resp.Markets, nil
 }
 
 // GetTicker returns a ticker
@@ -108,7 +140,7 @@ func (b *BTCMarkets) GetFee() float64 {
 func (b *BTCMarkets) GetTicker(firstPair, secondPair string) (Ticker, error) {
 	ticker := Ticker{}
 	path := fmt.Sprintf("%s/market/%s/%s/tick",
-		btcMarketsAPIURL,
+		b.APIUrl,
 		common.StringToUpper(firstPair),
 		common.StringToUpper(secondPair))
 
@@ -120,7 +152,7 @@ func (b *BTCMarkets) GetTicker(firstPair, secondPair string) (Ticker, error) {
 func (b *BTCMarkets) GetOrderbook(firstPair, secondPair string) (Orderbook, error) {
 	orderbook := Orderbook{}
 	path := fmt.Sprintf("%s/market/%s/%s/orderbook",
-		btcMarketsAPIURL,
+		b.APIUrl,
 		common.StringToUpper(firstPair),
 		common.StringToUpper(secondPair))
 
@@ -133,7 +165,7 @@ func (b *BTCMarkets) GetOrderbook(firstPair, secondPair string) (Orderbook, erro
 func (b *BTCMarkets) GetTrades(firstPair, secondPair string, values url.Values) ([]Trade, error) {
 	trades := []Trade{}
 	path := common.EncodeURLValues(fmt.Sprintf("%s/market/%s/%s/trades",
-		btcMarketsAPIURL, common.StringToUpper(firstPair),
+		b.APIUrl, common.StringToUpper(firstPair),
 		common.StringToUpper(secondPair)), values)
 
 	return trades, b.SendHTTPRequest(path, &trades)
@@ -313,6 +345,13 @@ func (b *BTCMarkets) GetAccountBalance() ([]AccountBalance, error) {
 	return balance, nil
 }
 
+// GetTradingFee returns the account's trading fee for a currency pair
+func (b *BTCMarkets) GetTradingFee(firstPair, secondPair string) (TradingFee, error) {
+	var tradingFee TradingFee
+	path := fmt.Sprintf(btcMarketsTradingFee, firstPair, secondPair)
+	return tradingFee, b.SendAuthenticatedRequest("GET", path, nil, &tradingFee)
+}
+
 // WithdrawCrypto withdraws cryptocurrency into a designated address
 func (b *BTCMarkets) WithdrawCrypto(amount float64, currency, address string) (string, error) {
 	newAmount := int64(amount * float64(common.SatoshisPerBTC))
@@ -395,7 +434,7 @@ func (b *BTCMarkets) SendAuthenticatedRequest(reqType, path string, data interfa
 	hmac := common.GetHMAC(common.HashSHA512, []byte(request), []byte(b.APISecret))
 
 	if b.Verbose {
-		log.Printf("Sending %s request to URL %s with params %s\n", reqType, btcMarketsAPIURL+path, request)
+		log.Printf("Sending %s request to URL %s with params %s\n", reqType, b.APIUrl+path, request)
 	}
 
 	headers := make(map[string]string)
@@ -406,5 +445,46 @@ func (b *BTCMarkets) SendAuthenticatedRequest(reqType, path string, data interfa
 	headers["timestamp"] = b.Nonce.String()[0:13]
 	headers["signature"] = common.Base64Encode(hmac)
 
-	return b.SendPayload(reqType, btcMarketsAPIURL+path, headers, bytes.NewBuffer(payload), result, true, b.Verbose)
+	return b.SendPayload(reqType, b.APIUrl+path, headers, bytes.NewBuffer(payload), result, true, b.Verbose)
+}
+
+// GetFee returns an estimate of fee based on type of transaction
+func (b *BTCMarkets) GetFee(feeBuilder exchange.FeeBuilder) (float64, error) {
+	var fee float64
+
+	switch feeBuilder.FeeType {
+	case exchange.CryptocurrencyTradeFee:
+		tradingFee, err := b.GetTradingFee(feeBuilder.FirstCurrency, feeBuilder.SecondCurrency)
+		if err != nil {
+			return 0, err
+		}
+		fee = calculateTradingFee(feeBuilder.FirstCurrency+feeBuilder.Delimiter+feeBuilder.SecondCurrency, tradingFee, feeBuilder.PurchasePrice, feeBuilder.Amount)
+	case exchange.CryptocurrencyWithdrawalFee:
+		fee = getCryptocurrencyWithdrawalFee(feeBuilder.FirstCurrency)
+	case exchange.InternationalBankWithdrawalFee:
+		fee = getInternationalBankWithdrawalFee(feeBuilder.CurrencyItem, feeBuilder.Amount)
+	}
+	if fee < 0 {
+		fee = 0
+	}
+	return fee, nil
+}
+
+func calculateTradingFee(curr string, tradingFee TradingFee, purchasePrice, amount float64) (fee float64) {
+	fee = tradingFee.TradingFeeRate / 100000000
+
+	return fee * amount * purchasePrice
+}
+
+func getCryptocurrencyWithdrawalFee(currency string) float64 {
+	return WithdrawalFees[currency]
+}
+
+func getInternationalBankWithdrawalFee(currency string, amount float64) float64 {
+	var fee float64
+
+	if currency == symbol.AUD {
+		fee = 0
+	}
+	return fee
 }

@@ -24,13 +24,9 @@ func (c *CoinbasePro) Start(wg *sync.WaitGroup) {
 // Run implements the coinbasepro wrapper
 func (c *CoinbasePro) Run() {
 	if c.Verbose {
-		log.Printf("%s Websocket: %s. (url: %s).\n", c.GetName(), common.IsEnabled(c.Websocket), coinbaseproWebsocketURL)
+		log.Printf("%s Websocket: %s. (url: %s).\n", c.GetName(), common.IsEnabled(c.Websocket.IsEnabled()), coinbaseproWebsocketURL)
 		log.Printf("%s polling delay: %ds.\n", c.GetName(), c.RESTPollingDelay)
 		log.Printf("%s %d currencies enabled: %s.\n", c.GetName(), len(c.EnabledPairs), c.EnabledPairs)
-	}
-
-	if c.Websocket {
-		go c.WebsocketClient()
 	}
 
 	exchangeProducts, err := c.GetProducts()
@@ -126,7 +122,7 @@ func (c *CoinbasePro) UpdateOrderbook(p pair.CurrencyPair, assetType string) (or
 	}
 
 	for x := range obNew.Asks {
-		orderBook.Asks = append(orderBook.Asks, orderbook.Item{Amount: obNew.Bids[x].Amount, Price: obNew.Bids[x].Price})
+		orderBook.Asks = append(orderBook.Asks, orderbook.Item{Amount: obNew.Asks[x].Amount, Price: obNew.Asks[x].Price})
 	}
 
 	orderbook.ProcessOrderbook(c.GetName(), p, orderBook, assetType)
@@ -189,4 +185,19 @@ func (c *CoinbasePro) WithdrawCryptoExchangeFunds(address string, cryptocurrency
 // submitted
 func (c *CoinbasePro) WithdrawFiatExchangeFunds(cryptocurrency pair.CurrencyItem, amount float64) (string, error) {
 	return "", errors.New("not yet implemented")
+}
+
+// GetWebsocket returns a pointer to the exchange websocket
+func (c *CoinbasePro) GetWebsocket() (*exchange.Websocket, error) {
+	return c.Websocket, nil
+}
+
+// GetFeeByType returns an estimate of fee based on type of transaction
+func (c *CoinbasePro) GetFeeByType(feeBuilder exchange.FeeBuilder) (float64, error) {
+	return c.GetFee(feeBuilder)
+}
+
+// GetWithdrawCapabilities returns the types of withdrawal methods permitted by the exchange
+func (c *CoinbasePro) GetWithdrawCapabilities() uint32 {
+	return c.GetWithdrawPermissions()
 }

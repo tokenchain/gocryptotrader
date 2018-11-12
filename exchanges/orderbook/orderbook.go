@@ -27,6 +27,7 @@ var (
 type Item struct {
 	Amount float64
 	Price  float64
+	ID     int64
 }
 
 // Base holds the fields for the orderbook base
@@ -36,6 +37,7 @@ type Base struct {
 	Bids         []Item            `json:"bids"`
 	Asks         []Item            `json:"asks"`
 	LastUpdated  time.Time         `json:"last_updated"`
+	AssetType    string
 }
 
 // Orderbook holds the orderbook information for a currency pair and type
@@ -83,7 +85,7 @@ func GetOrderbook(exchange string, p pair.CurrencyPair, orderbookType string) (B
 		return Base{}, err
 	}
 
-	if !FirstCurrencyExists(exchange, p.GetFirstCurrency()) {
+	if !FirstCurrencyExists(exchange, p.FirstCurrency) {
 		return Base{}, errors.New(ErrPrimaryCurrencyNotFound)
 	}
 
@@ -91,7 +93,7 @@ func GetOrderbook(exchange string, p pair.CurrencyPair, orderbookType string) (B
 		return Base{}, errors.New(ErrSecondaryCurrencyNotFound)
 	}
 
-	return orderbook.Orderbook[p.GetFirstCurrency()][p.GetSecondCurrency()][orderbookType], nil
+	return orderbook.Orderbook[p.FirstCurrency][p.SecondCurrency][orderbookType], nil
 }
 
 // GetOrderbookByExchange returns an exchange orderbook
@@ -128,8 +130,8 @@ func SecondCurrencyExists(exchange string, p pair.CurrencyPair) bool {
 	defer m.Unlock()
 	for _, y := range Orderbooks {
 		if y.ExchangeName == exchange {
-			if _, ok := y.Orderbook[p.GetFirstCurrency()]; ok {
-				if _, ok := y.Orderbook[p.GetFirstCurrency()][p.GetSecondCurrency()]; ok {
+			if _, ok := y.Orderbook[p.FirstCurrency]; ok {
+				if _, ok := y.Orderbook[p.FirstCurrency][p.SecondCurrency]; ok {
 					return true
 				}
 			}
@@ -164,28 +166,19 @@ func ProcessOrderbook(exchangeName string, p pair.CurrencyPair, orderbookNew Bas
 	orderbookNew.CurrencyPair = p.Pair().String()
 	orderbookNew.LastUpdated = time.Now()
 
-	if len(Orderbooks) == 0 {
-		CreateNewOrderbook(exchangeName, p, orderbookNew, orderbookType)
-		return
-	}
-
 	orderbook, err := GetOrderbookByExchange(exchangeName)
 	if err != nil {
 		CreateNewOrderbook(exchangeName, p, orderbookNew, orderbookType)
 		return
 	}
 
-	if FirstCurrencyExists(exchangeName, p.GetFirstCurrency()) {
-		if !SecondCurrencyExists(exchangeName, p) {
-			m.Lock()
-			a := orderbook.Orderbook[p.FirstCurrency]
-			b := make(map[string]Base)
-			b[orderbookType] = orderbookNew
-			a[p.SecondCurrency] = b
-			orderbook.Orderbook[p.FirstCurrency] = a
-			m.Unlock()
-			return
-		}
+	if FirstCurrencyExists(exchangeName, p.FirstCurrency) {
+		m.Lock()
+		a := make(map[string]Base)
+		a[orderbookType] = orderbookNew
+		orderbook.Orderbook[p.FirstCurrency][p.SecondCurrency] = a
+		m.Unlock()
+		return
 	}
 
 	m.Lock()

@@ -1,5 +1,7 @@
 package okcoin
 
+import "github.com/thrasher-/gocryptotrader/currency/symbol"
+
 // Ticker holds ticker data
 type Ticker struct {
 	Buy  float64 `json:",string"`
@@ -251,17 +253,6 @@ type WebsocketFutureIndex struct {
 	Timestamp   int64   `json:"timestamp,string"`
 }
 
-// WebsocketTicker holds ticker data for websocket
-type WebsocketTicker struct {
-	Timestamp float64
-	Vol       string
-	Buy       float64
-	High      float64
-	Last      float64
-	Low       float64
-	Sell      float64
-}
-
 // WebsocketFuturesTicker holds futures ticker data for websocket
 type WebsocketFuturesTicker struct {
 	Buy        float64 `json:"buy"`
@@ -273,13 +264,6 @@ type WebsocketFuturesTicker struct {
 	Sell       float64 `json:"sell"`
 	UnitAmount float64 `json:"unitAmount"`
 	Volume     float64 `json:"vol,string"`
-}
-
-// WebsocketOrderbook holds orderbook data for websocket
-type WebsocketOrderbook struct {
-	Asks      [][]float64 `json:"asks"`
-	Bids      [][]float64 `json:"bids"`
-	Timestamp int64       `json:"timestamp,string"`
 }
 
 // WebsocketUserinfo holds user info for websocket
@@ -432,4 +416,14 @@ type WebsocketEventAuthRemove struct {
 type WebsocketTradeOrderResponse struct {
 	OrderID int64 `json:"order_id,string"`
 	Result  bool  `json:"result,string"`
+}
+
+// WithdrawalFees the large list of predefined withdrawal fees
+// Prone to change, using highest value
+var WithdrawalFees = map[string]float64{
+	symbol.BTC: 0.005,
+	symbol.LTC: 0.2,
+	symbol.ETH: 0.01,
+	symbol.ETC: 0.2,
+	symbol.BCH: 0.002,
 }

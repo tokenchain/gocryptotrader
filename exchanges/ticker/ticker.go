@@ -121,8 +121,8 @@ func SecondCurrencyExists(exchange string, p pair.CurrencyPair) bool {
 	defer m.Unlock()
 	for _, y := range Tickers {
 		if y.ExchangeName == exchange {
-			if _, ok := y.Price[p.GetFirstCurrency()]; ok {
-				if _, ok := y.Price[p.GetFirstCurrency()][p.GetSecondCurrency()]; ok {
+			if _, ok := y.Price[p.FirstCurrency]; ok {
+				if _, ok := y.Price[p.FirstCurrency][p.SecondCurrency]; ok {
 					return true
 				}
 			}
@@ -157,10 +157,6 @@ func ProcessTicker(exchangeName string, p pair.CurrencyPair, tickerNew Price, ti
 
 	tickerNew.CurrencyPair = p.Pair().String()
 	tickerNew.LastUpdated = time.Now()
-	if len(Tickers) == 0 {
-		CreateNewTicker(exchangeName, p, tickerNew, tickerType)
-		return
-	}
 
 	ticker, err := GetTickerByExchange(exchangeName)
 	if err != nil {
@@ -169,16 +165,12 @@ func ProcessTicker(exchangeName string, p pair.CurrencyPair, tickerNew Price, ti
 	}
 
 	if FirstCurrencyExists(exchangeName, p.FirstCurrency) {
-		if !SecondCurrencyExists(exchangeName, p) {
-			m.Lock()
-			a := ticker.Price[p.FirstCurrency]
-			b := make(map[string]Price)
-			b[tickerType] = tickerNew
-			a[p.SecondCurrency] = b
-			ticker.Price[p.FirstCurrency] = a
-			m.Unlock()
-			return
-		}
+		m.Lock()
+		a := make(map[string]Price)
+		a[tickerType] = tickerNew
+		ticker.Price[p.FirstCurrency][p.SecondCurrency] = a
+		m.Unlock()
+		return
 	}
 
 	m.Lock()

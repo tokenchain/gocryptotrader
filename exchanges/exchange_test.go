@@ -14,7 +14,7 @@ import (
 
 func TestSupportsRESTTickerBatchUpdates(t *testing.T) {
 	b := Base{
-		Name: "RAWR",
+		Name:                       "RAWR",
 		SupportsRESTTickerBatching: true,
 	}
 
@@ -46,7 +46,10 @@ func TestHTTPClient(t *testing.T) {
 	}
 
 	b := Base{Name: "RAWR"}
-	b.Requester = request.New(b.Name, request.NewRateLimit(time.Second, 1), request.NewRateLimit(time.Second, 1), new(http.Client))
+	b.Requester = request.New(b.Name,
+		request.NewRateLimit(time.Second, 1),
+		request.NewRateLimit(time.Second, 1),
+		new(http.Client))
 
 	b.SetHTTPClientTimeout(time.Second * 5)
 	if b.GetHTTPClient().Timeout != time.Second*5 {
@@ -61,6 +64,36 @@ func TestHTTPClient(t *testing.T) {
 		t.Fatalf("Test failed. TestHTTPClient unexpected value")
 	}
 }
+
+func TestSetClientProxyAddress(t *testing.T) {
+	requester := request.New("testicles",
+		&request.RateLimit{},
+		&request.RateLimit{},
+		&http.Client{})
+
+	newBase := Base{Name: "Testicles", Requester: requester}
+
+	newBase.WebsocketInit()
+
+	err := newBase.SetClientProxyAddress(":invalid")
+	if err == nil {
+		t.Error("Test failed. SetClientProxyAddress parsed invalid URL")
+	}
+
+	if newBase.Websocket.GetProxyAddress() != "" {
+		t.Error("Test failed. SetClientProxyAddress error", err)
+	}
+
+	err = newBase.SetClientProxyAddress("www.valid.com")
+	if err != nil {
+		t.Error("Test failed. SetClientProxyAddress error", err)
+	}
+
+	if newBase.Websocket.GetProxyAddress() != "www.valid.com" {
+		t.Error("Test failed. SetClientProxyAddress error", err)
+	}
+}
+
 func TestSetAutoPairDefaults(t *testing.T) {
 	cfg := config.GetConfig()
 	err := cfg.LoadConfig(config.ConfigTestFile)
@@ -69,7 +102,7 @@ func TestSetAutoPairDefaults(t *testing.T) {
 	}
 
 	b := Base{
-		Name: "TESTNAME",
+		Name:                     "TESTNAME",
 		SupportsAutoPairUpdating: true,
 	}
 
@@ -139,7 +172,7 @@ func TestSetAutoPairDefaults(t *testing.T) {
 
 func TestSupportsAutoPairUpdates(t *testing.T) {
 	b := Base{
-		Name: "TESTNAME",
+		Name:                     "TESTNAME",
 		SupportsAutoPairUpdating: false,
 	}
 
@@ -177,6 +210,7 @@ func TestSetAssetTypes(t *testing.T) {
 	}
 
 	b.Name = "ANX"
+	b.AssetTypes = []string{"SPOT"}
 	err = b.SetAssetTypes()
 	if err != nil {
 		t.Fatalf("Test failed. TestSetAssetTypes. Error %s", err)
@@ -209,6 +243,17 @@ func TestSetAssetTypes(t *testing.T) {
 
 	if !common.StringDataCompare(b.AssetTypes, ticker.Spot) {
 		t.Fatal("Test failed. TestSetAssetTypes assetTypes is not set")
+	}
+}
+
+func TestGetAssetTypes(t *testing.T) {
+	testExchange := Base{
+		AssetTypes: []string{"SPOT", "Binary", "Futures"},
+	}
+
+	aT := testExchange.GetAssetTypes()
+	if len(aT) != 3 {
+		t.Error("Test failed. TestGetAssetTypes failed")
 	}
 }
 
@@ -668,6 +713,11 @@ func TestSetCurrencies(t *testing.T) {
 	if !pair.Contains(UAC.GetAvailableCurrencies(), newPair, true) {
 		t.Fatal("Test failed. TestSetCurrencies failed to set currencies")
 	}
+
+	err = UAC.SetCurrencies(nil, false)
+	if err == nil {
+		t.Fatal("Test failed. TestSetCurrencies should return an error when attempting to set an empty pairs array")
+	}
 }
 
 func TestUpdateCurrencies(t *testing.T) {
@@ -743,4 +793,100 @@ func TestUpdateCurrencies(t *testing.T) {
 	if err != nil {
 		t.Errorf("Test Failed - Forced Exchange UpdateCurrencies() error: %s", err)
 	}
+
+	// Test that empty exchange products should return an error
+	exchangeProducts = nil
+	err = UAC.UpdateCurrencies(exchangeProducts, false, false)
+	if err == nil {
+		t.Errorf("Test failed - empty available pairs should return an error")
+	}
+}
+
+func TestAPIURL(t *testing.T) {
+	testURL := "https://api.something.com"
+	testURLSecondary := "https://api.somethingelse.com"
+	testURLDefault := "https://api.defaultsomething.com"
+	testURLSecondaryDefault := "https://api.defaultsomethingelse.com"
+
+	tester := Base{Name: "test"}
+
+	test := config.ExchangeConfig{}
+
+	err := tester.SetAPIURL(test)
+	if err == nil {
+		t.Error("test failed - setting zero value config")
+	}
+
+	test.APIURL = testURL
+	test.APIURLSecondary = testURLSecondary
+
+	tester.APIUrlDefault = testURLDefault
+	tester.APIUrlSecondaryDefault = testURLSecondaryDefault
+
+	err = tester.SetAPIURL(test)
+	if err != nil {
+		t.Error("test failed", err)
+	}
+
+	if tester.GetAPIURL() != testURL {
+		t.Error("test failed - incorrect return URL")
+	}
+
+	if tester.GetSecondaryAPIURL() != testURLSecondary {
+		t.Error("test failed - incorrect return URL")
+	}
+
+	if tester.GetAPIURLDefault() != testURLDefault {
+		t.Error("test failed - incorrect return URL")
+	}
+
+	if tester.GetAPIURLSecondaryDefault() != testURLSecondaryDefault {
+		t.Error("test failed - incorrect return URL")
+	}
+}
+
+func TestSupportsWithdrawPermissions(t *testing.T) {
+	UAC := Base{Name: "ANX"}
+	UAC.APIWithdrawPermissions = AutoWithdrawCrypto | AutoWithdrawCryptoWithAPIPermission
+	withdrawPermissions := UAC.SupportsWithdrawPermissions(AutoWithdrawCrypto)
+
+	if !withdrawPermissions {
+		t.Errorf("Expected: %v, Recieved: %v", true, withdrawPermissions)
+	}
+
+	withdrawPermissions = UAC.SupportsWithdrawPermissions(AutoWithdrawCrypto | AutoWithdrawCryptoWithAPIPermission)
+	if !withdrawPermissions {
+		t.Errorf("Expected: %v, Recieved: %v", true, withdrawPermissions)
+	}
+
+	withdrawPermissions = UAC.SupportsWithdrawPermissions(AutoWithdrawCrypto | WithdrawCryptoWith2FA)
+	if withdrawPermissions {
+		t.Errorf("Expected: %v, Recieved: %v", false, withdrawPermissions)
+	}
+
+	withdrawPermissions = UAC.SupportsWithdrawPermissions(AutoWithdrawCrypto | AutoWithdrawCryptoWithAPIPermission | WithdrawCryptoWith2FA)
+	if withdrawPermissions {
+		t.Errorf("Expected: %v, Recieved: %v", false, withdrawPermissions)
+	}
+
+	withdrawPermissions = UAC.SupportsWithdrawPermissions(WithdrawCryptoWith2FA)
+	if withdrawPermissions {
+		t.Errorf("Expected: %v, Recieved: %v", false, withdrawPermissions)
+	}
+}
+
+func TestFormatWithdrawPermissions(t *testing.T) {
+	cfg := config.GetConfig()
+	err := cfg.LoadConfig(config.ConfigTestFile)
+	if err != nil {
+		t.Fatal("Test failed. TestUpdateEnabledCurrencies failed to load config")
+	}
+
+	UAC := Base{Name: "ANX"}
+	UAC.APIWithdrawPermissions = AutoWithdrawCrypto | AutoWithdrawCryptoWithAPIPermission
+	withdrawPermissions := UAC.FormatWithdrawPermissions()
+	if withdrawPermissions != AutoWithdrawCryptoText+" & "+AutoWithdrawCryptoWithAPIPermissionText {
+		t.Errorf("Expected: %s, Recieved: %s", AutoWithdrawCryptoText+" & "+AutoWithdrawCryptoWithAPIPermissionText, withdrawPermissions)
+	}
+
 }

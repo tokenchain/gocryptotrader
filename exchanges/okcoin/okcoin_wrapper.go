@@ -24,13 +24,37 @@ func (o *OKCoin) Start(wg *sync.WaitGroup) {
 // Run implements the OKCoin wrapper
 func (o *OKCoin) Run() {
 	if o.Verbose {
-		log.Printf("%s Websocket: %s. (url: %s).\n", o.GetName(), common.IsEnabled(o.Websocket), o.WebsocketURL)
+		log.Printf("%s Websocket: %s. (url: %s).\n", o.GetName(), common.IsEnabled(o.Websocket.IsEnabled()), o.WebsocketURL)
 		log.Printf("%s polling delay: %ds.\n", o.GetName(), o.RESTPollingDelay)
 		log.Printf("%s %d currencies enabled: %s.\n", o.GetName(), len(o.EnabledPairs), o.EnabledPairs)
 	}
 
-	if o.Websocket {
-		go o.WebsocketClient()
+	if o.APIUrl == okcoinAPIURL {
+		// OKCoin International
+		forceUpgrade := false
+		if !common.StringDataContains(o.EnabledPairs, "_") || !common.StringDataContains(o.AvailablePairs, "_") {
+			forceUpgrade = true
+		}
+
+		var currencies []string
+		for x := range o.AvailablePairs {
+			currencies = append(currencies, o.AvailablePairs[x][0:3]+"_"+o.AvailablePairs[x][3:])
+		}
+
+		if forceUpgrade {
+			enabledPairs := []string{"btc_usd"}
+			log.Println("WARNING: Available pairs for OKCoin International reset due to config upgrade, please enable the pairs you would like again.")
+
+			err := o.UpdateCurrencies(enabledPairs, true, true)
+			if err != nil {
+				log.Printf("%s failed to update currencies. Err: %s", o.Name, err)
+			}
+
+			err = o.UpdateCurrencies(currencies, false, true)
+			if err != nil {
+				log.Printf("%s failed to update currencies. Err: %s", o.Name, err)
+			}
+		}
 	}
 }
 
@@ -209,4 +233,19 @@ func (o *OKCoin) WithdrawFiatExchangeFunds(currency pair.CurrencyItem, amount fl
 // withdrawal is submitted
 func (o *OKCoin) WithdrawFiatExchangeFundsToInternationalBank(currency pair.CurrencyItem, amount float64) (string, error) {
 	return "", errors.New("not yet implemented")
+}
+
+// GetWebsocket returns a pointer to the exchange websocket
+func (o *OKCoin) GetWebsocket() (*exchange.Websocket, error) {
+	return o.Websocket, nil
+}
+
+// GetFeeByType returns an estimate of fee based on type of transaction
+func (o *OKCoin) GetFeeByType(feeBuilder exchange.FeeBuilder) (float64, error) {
+	return o.GetFee(feeBuilder)
+}
+
+// GetWithdrawCapabilities returns the types of withdrawal methods permitted by the exchange
+func (o *OKCoin) GetWithdrawCapabilities() uint32 {
+	return o.GetWithdrawPermissions()
 }

@@ -25,13 +25,9 @@ func (b *Bitstamp) Start(wg *sync.WaitGroup) {
 // Run implements the Bitstamp wrapper
 func (b *Bitstamp) Run() {
 	if b.Verbose {
-		log.Printf("%s Websocket: %s.", b.GetName(), common.IsEnabled(b.Websocket))
+		log.Printf("%s Websocket: %s.", b.GetName(), common.IsEnabled(b.Websocket.IsEnabled()))
 		log.Printf("%s polling delay: %ds.\n", b.GetName(), b.RESTPollingDelay)
 		log.Printf("%s %d currencies enabled: %s.\n", b.GetName(), len(b.EnabledPairs), b.EnabledPairs)
-	}
-
-	if b.Websocket {
-		go b.PusherClient()
 	}
 
 	pairs, err := b.GetTradingPairs()
@@ -79,6 +75,12 @@ func (b *Bitstamp) GetTickerPrice(p pair.CurrencyPair, assetType string) (ticker
 		return b.UpdateTicker(p, assetType)
 	}
 	return tick, nil
+}
+
+// GetFeeByType returns an estimate of fee based on type of transaction
+func (b *Bitstamp) GetFeeByType(feeBuilder exchange.FeeBuilder) (float64, error) {
+	return b.GetFee(feeBuilder)
+
 }
 
 // GetOrderbookEx returns the orderbook for a currency pair
@@ -210,4 +212,14 @@ func (b *Bitstamp) WithdrawFiatExchangeFunds(currency pair.CurrencyItem, amount 
 // withdrawal is submitted
 func (b *Bitstamp) WithdrawFiatExchangeFundsToInternationalBank(currency pair.CurrencyItem, amount float64) (string, error) {
 	return "", errors.New("not yet implemented")
+}
+
+// GetWebsocket returns a pointer to the exchange websocket
+func (b *Bitstamp) GetWebsocket() (*exchange.Websocket, error) {
+	return b.Websocket, nil
+}
+
+// GetWithdrawCapabilities returns the types of withdrawal methods permitted by the exchange
+func (b *Bitstamp) GetWithdrawCapabilities() uint32 {
+	return b.GetWithdrawPermissions()
 }

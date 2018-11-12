@@ -175,3 +175,18 @@ func (g *Gemini) WithdrawFiatExchangeFunds(currency pair.CurrencyItem, amount fl
 func (g *Gemini) WithdrawFiatExchangeFundsToInternationalBank(currency pair.CurrencyItem, amount float64) (string, error) {
 	return "", errors.New("not yet implemented")
 }
+
+// GetWebsocket returns a pointer to the exchange websocket
+func (g *Gemini) GetWebsocket() (*exchange.Websocket, error) {
+	return nil, errors.New("not yet implemented")
+}
+
+// GetFeeByType returns an estimate of fee based on type of transaction
+func (g *Gemini) GetFeeByType(feeBuilder exchange.FeeBuilder) (float64, error) {
+	return g.GetFee(feeBuilder)
+}
+
+// GetWithdrawCapabilities returns the types of withdrawal methods permitted by the exchange
+func (g *Gemini) GetWithdrawCapabilities() uint32 {
+	return g.GetWithdrawPermissions()
+}

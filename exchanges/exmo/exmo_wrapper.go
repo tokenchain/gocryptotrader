@@ -224,3 +224,18 @@ func (e *EXMO) WithdrawFiatExchangeFunds(currency pair.CurrencyItem, amount floa
 func (e *EXMO) WithdrawFiatExchangeFundsToInternationalBank(currency pair.CurrencyItem, amount float64) (string, error) {
 	return "", errors.New("not yet implemented")
 }
+
+// GetWebsocket returns a pointer to the exchange websocket
+func (e *EXMO) GetWebsocket() (*exchange.Websocket, error) {
+	return nil, errors.New("not yet implemented")
+}
+
+// GetFeeByType returns an estimate of fee based on type of transaction
+func (e *EXMO) GetFeeByType(feeBuilder exchange.FeeBuilder) (float64, error) {
+	return e.GetFee(feeBuilder)
+}
+
+// GetWithdrawCapabilities returns the types of withdrawal methods permitted by the exchange
+func (e *EXMO) GetWithdrawCapabilities() uint32 {
+	return e.GetWithdrawPermissions()
+}

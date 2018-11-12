@@ -11,6 +11,7 @@ import (
 
 	"github.com/thrasher-/gocryptotrader/common"
 	"github.com/thrasher-/gocryptotrader/config"
+	"github.com/thrasher-/gocryptotrader/currency/symbol"
 	exchange "github.com/thrasher-/gocryptotrader/exchanges"
 	"github.com/thrasher-/gocryptotrader/exchanges/request"
 	"github.com/thrasher-/gocryptotrader/exchanges/ticker"
@@ -55,8 +56,8 @@ func (e *EXMO) SetDefaults() {
 	e.Name = "EXMO"
 	e.Enabled = false
 	e.Verbose = false
-	e.Websocket = false
 	e.RESTPollingDelay = 10
+	e.APIWithdrawPermissions = exchange.AutoWithdrawCryptoWithSetup
 	e.RequestCurrencyPairFormat.Delimiter = "_"
 	e.RequestCurrencyPairFormat.Uppercase = true
 	e.RequestCurrencyPairFormat.Separator = ","
@@ -65,7 +66,13 @@ func (e *EXMO) SetDefaults() {
 	e.AssetTypes = []string{ticker.Spot}
 	e.SupportsAutoPairUpdating = true
 	e.SupportsRESTTickerBatching = true
-	e.Requester = request.New(e.Name, request.NewRateLimit(time.Minute, exmoAuthRate), request.NewRateLimit(time.Minute, exmoUnauthRate), common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
+	e.Requester = request.New(e.Name,
+		request.NewRateLimit(time.Minute, exmoAuthRate),
+		request.NewRateLimit(time.Minute, exmoUnauthRate),
+		common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
+	e.APIUrlDefault = exmoAPIURL
+	e.APIUrl = e.APIUrlDefault
+	e.WebsocketInit()
 }
 
 // Setup takes in the supplied exchange configuration details and sets params
@@ -80,7 +87,6 @@ func (e *EXMO) Setup(exch config.ExchangeConfig) {
 		e.SetHTTPClientUserAgent(exch.HTTPUserAgent)
 		e.RESTPollingDelay = exch.RESTPollingDelay
 		e.Verbose = exch.Verbose
-		e.Websocket = exch.Websocket
 		e.BaseCurrencies = common.SplitStrings(exch.BaseCurrencies, ",")
 		e.AvailablePairs = common.SplitStrings(exch.AvailablePairs, ",")
 		e.EnabledPairs = common.SplitStrings(exch.EnabledPairs, ",")
@@ -96,6 +102,14 @@ func (e *EXMO) Setup(exch config.ExchangeConfig) {
 		if err != nil {
 			log.Fatal(err)
 		}
+		err = e.SetAPIURL(exch)
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = e.SetClientProxyAddress(exch.ProxyAddress)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 }
 
@@ -104,7 +118,7 @@ func (e *EXMO) GetTrades(symbol string) (map[string][]Trades, error) {
 	v := url.Values{}
 	v.Set("pair", symbol)
 	result := make(map[string][]Trades)
-	url := fmt.Sprintf("%s/v%s/%s", exmoAPIURL, exmoAPIVersion, exmoTrades)
+	url := fmt.Sprintf("%s/v%s/%s", e.APIUrl, exmoAPIVersion, exmoTrades)
 
 	return result, e.SendHTTPRequest(common.EncodeURLValues(url, v), &result)
 }
@@ -114,7 +128,7 @@ func (e *EXMO) GetOrderbook(symbol string) (map[string]Orderbook, error) {
 	v := url.Values{}
 	v.Set("pair", symbol)
 	result := make(map[string]Orderbook)
-	url := fmt.Sprintf("%s/v%s/%s", exmoAPIURL, exmoAPIVersion, exmoOrderbook)
+	url := fmt.Sprintf("%s/v%s/%s", e.APIUrl, exmoAPIVersion, exmoOrderbook)
 
 	return result, e.SendHTTPRequest(common.EncodeURLValues(url, v), &result)
 }
@@ -124,7 +138,7 @@ func (e *EXMO) GetTicker(symbol string) (map[string]Ticker, error) {
 	v := url.Values{}
 	v.Set("pair", symbol)
 	result := make(map[string]Ticker)
-	url := fmt.Sprintf("%s/v%s/%s", exmoAPIURL, exmoAPIVersion, exmoTicker)
+	url := fmt.Sprintf("%s/v%s/%s", e.APIUrl, exmoAPIVersion, exmoTicker)
 
 	return result, e.SendHTTPRequest(common.EncodeURLValues(url, v), &result)
 }
@@ -132,7 +146,7 @@ func (e *EXMO) GetTicker(symbol string) (map[string]Ticker, error) {
 // GetPairSettings returns the pair settings for a symbol or symbols
 func (e *EXMO) GetPairSettings() (map[string]PairSettings, error) {
 	result := make(map[string]PairSettings)
-	url := fmt.Sprintf("%s/v%s/%s", exmoAPIURL, exmoAPIVersion, exmoPairSettings)
+	url := fmt.Sprintf("%s/v%s/%s", e.APIUrl, exmoAPIVersion, exmoPairSettings)
 
 	return result, e.SendHTTPRequest(url, &result)
 }
@@ -140,7 +154,7 @@ func (e *EXMO) GetPairSettings() (map[string]PairSettings, error) {
 // GetCurrency returns a list of currencies
 func (e *EXMO) GetCurrency() ([]string, error) {
 	result := []string{}
-	url := fmt.Sprintf("%s/v%s/%s", exmoAPIURL, exmoAPIVersion, exmoCurrency)
+	url := fmt.Sprintf("%s/v%s/%s", e.APIUrl, exmoAPIVersion, exmoCurrency)
 
 	return result, e.SendHTTPRequest(url, &result)
 }
@@ -347,7 +361,165 @@ func (e *EXMO) SendAuthenticatedHTTPRequest(method, endpoint string, vals url.Va
 	headers["Sign"] = common.HexEncodeToString(hash)
 	headers["Content-Type"] = "application/x-www-form-urlencoded"
 
-	path := fmt.Sprintf("%s/v%s/%s", exmoAPIURL, exmoAPIVersion, endpoint)
+	path := fmt.Sprintf("%s/v%s/%s", e.APIUrl, exmoAPIVersion, endpoint)
 
 	return e.SendPayload(method, path, headers, strings.NewReader(payload), result, true, e.Verbose)
+}
+
+// GetFee returns an estimate of fee based on type of transaction
+func (e *EXMO) GetFee(feeBuilder exchange.FeeBuilder) (float64, error) {
+	var fee float64
+	switch feeBuilder.FeeType {
+	case exchange.CryptocurrencyTradeFee:
+		fee = e.calculateTradingFee(feeBuilder.PurchasePrice, feeBuilder.Amount)
+	case exchange.CryptocurrencyWithdrawalFee:
+		fee = getCryptocurrencyWithdrawalFee(feeBuilder.FirstCurrency)
+	case exchange.InternationalBankWithdrawalFee:
+		fee = getInternationalBankWithdrawalFee(feeBuilder.CurrencyItem, feeBuilder.Amount, feeBuilder.BankTransactionType)
+	case exchange.InternationalBankDepositFee:
+		fee = getInternationalBankDepositFee(feeBuilder.CurrencyItem, feeBuilder.Amount, feeBuilder.BankTransactionType)
+	}
+
+	if fee < 0 {
+		fee = 0
+	}
+
+	return fee, nil
+}
+
+func getCryptocurrencyWithdrawalFee(currency string) float64 {
+	return WithdrawalFees[currency]
+}
+
+func (e *EXMO) calculateTradingFee(purchasePrice, amount float64) float64 {
+	fee := 0.002
+	return fee * amount * purchasePrice
+}
+
+func calculateTradingFee(purchasePrice, amount float64) float64 {
+	fee := 0.002
+	return fee * amount * purchasePrice
+}
+
+func getInternationalBankWithdrawalFee(currency string, amount float64, bankTransactionType exchange.InternationalBankTransactionType) float64 {
+	var fee float64
+
+	switch bankTransactionType {
+	case exchange.WireTransfer:
+		if currency == symbol.RUB {
+			fee = 3200
+		} else if currency == symbol.PLN {
+			fee = 125
+		} else if currency == symbol.TRY {
+			fee = 0
+		}
+	case exchange.PerfectMoney:
+		switch currency {
+		case symbol.USD:
+			fee = 0.01 * amount
+		case symbol.EUR:
+			fee = 0.0195 * amount
+		}
+	case exchange.Neteller:
+		switch currency {
+		case symbol.USD:
+			fee = 0.0195 * amount
+		case symbol.EUR:
+			fee = 0.0195 * amount
+		}
+	case exchange.AdvCash:
+		switch currency {
+		case symbol.USD:
+			fee = 0.0295 * amount
+		case symbol.EUR:
+			fee = 0.03 * amount
+		case symbol.RUB:
+			fee = 0.0195 * amount
+		case symbol.UAH:
+			fee = 0.0495 * amount
+		}
+	case exchange.Payeer:
+		switch currency {
+		case symbol.USD:
+			fee = 0.0395 * amount
+		case symbol.EUR:
+			fee = 0.01 * amount
+		case symbol.RUB:
+			fee = 0.0595 * amount
+		}
+	case exchange.Skrill:
+		switch currency {
+		case symbol.USD:
+			fee = 0.0145 * amount
+		case symbol.EUR:
+			fee = 0.03 * amount
+		case symbol.TRY:
+			fee = 0
+		}
+	case exchange.VisaMastercard:
+		switch currency {
+		case symbol.USD:
+			fee = 0.06 * amount
+		case symbol.EUR:
+			fee = 0.06 * amount
+		case symbol.PLN:
+			fee = 0.06 * amount
+		}
+	}
+
+	return fee
+}
+
+func getInternationalBankDepositFee(currency string, amount float64, bankTransactionType exchange.InternationalBankTransactionType) float64 {
+	var fee float64
+	switch bankTransactionType {
+	case exchange.WireTransfer:
+		if currency == symbol.RUB {
+			fee = 1600
+		} else if currency == symbol.PLN {
+			fee = 30
+		} else if currency == symbol.TRY {
+			fee = 0
+		}
+	case exchange.Neteller:
+		switch currency {
+		case symbol.USD:
+			fee = (0.035 * amount) + 0.29
+		case symbol.EUR:
+			fee = (0.035 * amount) + 0.25
+		}
+	case exchange.AdvCash:
+		switch currency {
+		case symbol.USD:
+			fee = 0.0295 * amount
+		case symbol.EUR:
+			fee = 0.01 * amount
+		case symbol.RUB:
+			fee = 0.0495 * amount
+		case symbol.UAH:
+			fee = 0.01 * amount
+		}
+	case exchange.Payeer:
+		switch currency {
+		case symbol.USD:
+			fee = 0.0195 * amount
+		case symbol.EUR:
+			fee = 0.0295 * amount
+		case symbol.RUB:
+			fee = 0.0345 * amount
+		}
+	case exchange.Skrill:
+		switch currency {
+		case symbol.USD:
+			fee = (0.0495 * amount) + 0.36
+		case symbol.EUR:
+			fee = (0.0295 * amount) + 0.29
+		case symbol.PLN:
+			fee = (0.035 * amount) + 1.21
+		case symbol.TRY:
+			fee = 0
+		}
+	}
+
+	return fee
 }

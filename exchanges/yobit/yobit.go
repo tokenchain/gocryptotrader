@@ -11,6 +11,7 @@ import (
 
 	"github.com/thrasher-/gocryptotrader/common"
 	"github.com/thrasher-/gocryptotrader/config"
+	"github.com/thrasher-/gocryptotrader/currency/symbol"
 	"github.com/thrasher-/gocryptotrader/exchanges"
 	"github.com/thrasher-/gocryptotrader/exchanges/request"
 	"github.com/thrasher-/gocryptotrader/exchanges/ticker"
@@ -51,11 +52,10 @@ func (y *Yobit) SetDefaults() {
 	y.Enabled = true
 	y.Fee = 0.2
 	y.Verbose = false
-	y.Websocket = false
 	y.RESTPollingDelay = 10
-	y.APIUrl = apiPublicURL
 	y.AuthenticatedAPISupport = true
 	y.Ticker = make(map[string]Ticker)
+	y.APIWithdrawPermissions = exchange.AutoWithdrawCryptoWithAPIPermission | exchange.WithdrawFiatViaWebsiteOnly
 	y.RequestCurrencyPairFormat.Delimiter = "_"
 	y.RequestCurrencyPairFormat.Uppercase = false
 	y.RequestCurrencyPairFormat.Separator = "-"
@@ -64,7 +64,15 @@ func (y *Yobit) SetDefaults() {
 	y.AssetTypes = []string{ticker.Spot}
 	y.SupportsAutoPairUpdating = false
 	y.SupportsRESTTickerBatching = true
-	y.Requester = request.New(y.Name, request.NewRateLimit(time.Second, yobitAuthRate), request.NewRateLimit(time.Second, yobitUnauthRate), common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
+	y.Requester = request.New(y.Name,
+		request.NewRateLimit(time.Second, yobitAuthRate),
+		request.NewRateLimit(time.Second, yobitUnauthRate),
+		common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
+	y.APIUrlDefault = apiPublicURL
+	y.APIUrl = y.APIUrlDefault
+	y.APIUrlSecondaryDefault = apiPrivateURL
+	y.APIUrlSecondary = y.APIUrlSecondaryDefault
+	y.WebsocketInit()
 }
 
 // Setup sets exchange configuration parameters for Yobit
@@ -77,7 +85,7 @@ func (y *Yobit) Setup(exch config.ExchangeConfig) {
 		y.SetAPIKeys(exch.APIKey, exch.APISecret, "", false)
 		y.RESTPollingDelay = exch.RESTPollingDelay
 		y.Verbose = exch.Verbose
-		y.Websocket = exch.Websocket
+		y.Websocket.SetEnabled(exch.Websocket)
 		y.BaseCurrencies = common.SplitStrings(exch.BaseCurrencies, ",")
 		y.AvailablePairs = common.SplitStrings(exch.AvailablePairs, ",")
 		y.EnabledPairs = common.SplitStrings(exch.EnabledPairs, ",")
@@ -95,18 +103,21 @@ func (y *Yobit) Setup(exch config.ExchangeConfig) {
 		if err != nil {
 			log.Fatal(err)
 		}
+		err = y.SetAPIURL(exch)
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = y.SetClientProxyAddress(exch.ProxyAddress)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
-}
-
-// GetFee returns the exchange fee
-func (y *Yobit) GetFee() float64 {
-	return y.Fee
 }
 
 // GetInfo returns the Yobit info
 func (y *Yobit) GetInfo() (Info, error) {
 	resp := Info{}
-	path := fmt.Sprintf("%s/%s/%s/", apiPublicURL, apiPublicVersion, publicInfo)
+	path := fmt.Sprintf("%s/%s/%s/", y.APIUrl, apiPublicVersion, publicInfo)
 
 	return resp, y.SendHTTPRequest(path, &resp)
 }
@@ -118,7 +129,7 @@ func (y *Yobit) GetTicker(symbol string) (map[string]Ticker, error) {
 	}
 
 	response := Response{}
-	path := fmt.Sprintf("%s/%s/%s/%s", apiPublicURL, apiPublicVersion, publicTicker, symbol)
+	path := fmt.Sprintf("%s/%s/%s/%s", y.APIUrl, apiPublicVersion, publicTicker, symbol)
 
 	return response.Data, y.SendHTTPRequest(path, &response.Data)
 }
@@ -130,7 +141,7 @@ func (y *Yobit) GetDepth(symbol string) (Orderbook, error) {
 	}
 
 	response := Response{}
-	path := fmt.Sprintf("%s/%s/%s/%s", apiPublicURL, apiPublicVersion, publicDepth, symbol)
+	path := fmt.Sprintf("%s/%s/%s/%s", y.APIUrl, apiPublicVersion, publicDepth, symbol)
 
 	return response.Data[symbol],
 		y.SendHTTPRequest(path, &response.Data)
@@ -143,7 +154,7 @@ func (y *Yobit) GetTrades(symbol string) ([]Trades, error) {
 	}
 
 	response := Response{}
-	path := fmt.Sprintf("%s/%s/%s/%s", apiPublicURL, apiPublicVersion, publicTrades, symbol)
+	path := fmt.Sprintf("%s/%s/%s/%s", y.APIUrl, apiPublicVersion, publicTrades, symbol)
 
 	return response.Data[symbol], y.SendHTTPRequest(path, &response.Data)
 }
@@ -343,4 +354,111 @@ func (y *Yobit) SendAuthenticatedHTTPRequest(path string, params url.Values, res
 	headers["Content-Type"] = "application/x-www-form-urlencoded"
 
 	return y.SendPayload("POST", apiPrivateURL, headers, strings.NewReader(encoded), result, true, y.Verbose)
+}
+
+// GetFee returns an estimate of fee based on type of transaction
+func (y *Yobit) GetFee(feeBuilder exchange.FeeBuilder) (float64, error) {
+	var fee float64
+	switch feeBuilder.FeeType {
+	case exchange.CryptocurrencyTradeFee:
+		fee = calculateTradingFee(feeBuilder.PurchasePrice, feeBuilder.Amount)
+	case exchange.CryptocurrencyWithdrawalFee:
+		fee = getWithdrawalFee(feeBuilder.FirstCurrency)
+	case exchange.InternationalBankDepositFee:
+		fee = getInternationalBankDepositFee(feeBuilder.CurrencyItem, feeBuilder.Amount, feeBuilder.BankTransactionType)
+	case exchange.InternationalBankWithdrawalFee:
+		fee = getInternationalBankWithdrawalFee(feeBuilder.CurrencyItem, feeBuilder.Amount, feeBuilder.BankTransactionType)
+	}
+	if fee < 0 {
+		fee = 0
+	}
+
+	return fee, nil
+}
+
+func calculateTradingFee(purchasePrice, amount float64) (fee float64) {
+	fee = 0.002
+	return fee * amount * purchasePrice
+}
+
+func getWithdrawalFee(currency string) float64 {
+	return WithdrawalFees[currency]
+}
+
+func getInternationalBankWithdrawalFee(currency string, amount float64, bankTransactionType exchange.InternationalBankTransactionType) float64 {
+	var fee float64
+
+	switch bankTransactionType {
+	case exchange.PerfectMoney:
+		switch currency {
+		case symbol.USD:
+			fee = 0.02 * amount
+		}
+	case exchange.Payeer:
+		switch currency {
+		case symbol.USD:
+			fee = 0.03 * amount
+		case symbol.RUR:
+			fee = 0.006 * amount
+		}
+	case exchange.AdvCash:
+		switch currency {
+		case symbol.USD:
+			fee = 0.04 * amount
+		case symbol.RUR:
+			fee = 0.03 * amount
+		}
+	case exchange.Qiwi:
+		switch currency {
+		case symbol.RUR:
+			fee = 0.04 * amount
+		}
+	case exchange.Capitalist:
+		switch currency {
+		case symbol.USD:
+			fee = 0.06 * amount
+		}
+	}
+
+	return fee
+}
+
+// No real fees for yobit deposits, but want to be explicit on what each payment type supports
+func getInternationalBankDepositFee(currency string, amount float64, bankTransactionType exchange.InternationalBankTransactionType) float64 {
+	var fee float64
+	switch bankTransactionType {
+	case exchange.PerfectMoney:
+		switch currency {
+		case symbol.USD:
+			fee = 0
+		}
+	case exchange.Payeer:
+		switch currency {
+		case symbol.USD:
+			fee = 0
+		case symbol.RUR:
+			fee = 0
+		}
+	case exchange.AdvCash:
+		switch currency {
+		case symbol.USD:
+			fee = 0
+		case symbol.RUR:
+			fee = 0
+		}
+	case exchange.Qiwi:
+		switch currency {
+		case symbol.RUR:
+			fee = 0
+		}
+	case exchange.Capitalist:
+		switch currency {
+		case symbol.USD:
+			fee = 0
+		case symbol.RUR:
+			fee = 0
+		}
+	}
+
+	return fee
 }

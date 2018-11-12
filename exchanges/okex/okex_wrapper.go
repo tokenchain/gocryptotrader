@@ -7,7 +7,7 @@ import (
 
 	"github.com/thrasher-/gocryptotrader/common"
 	"github.com/thrasher-/gocryptotrader/currency/pair"
-	"github.com/thrasher-/gocryptotrader/exchanges"
+	exchange "github.com/thrasher-/gocryptotrader/exchanges"
 	"github.com/thrasher-/gocryptotrader/exchanges/orderbook"
 	"github.com/thrasher-/gocryptotrader/exchanges/ticker"
 )
@@ -24,7 +24,7 @@ func (o *OKEX) Start(wg *sync.WaitGroup) {
 // Run implements the OKEX wrapper
 func (o *OKEX) Run() {
 	if o.Verbose {
-		log.Printf("%s Websocket: %s. (url: %s).\n", o.GetName(), common.IsEnabled(o.Websocket), o.WebsocketURL)
+		log.Printf("%s Websocket: %s. (url: %s).\n", o.GetName(), common.IsEnabled(o.Websocket.IsEnabled()), o.WebsocketURL)
 		log.Printf("%s polling delay: %ds.\n", o.GetName(), o.RESTPollingDelay)
 		log.Printf("%s %d currencies enabled: %s.\n", o.GetName(), len(o.EnabledPairs), o.EnabledPairs)
 	}
@@ -36,10 +36,6 @@ func (o *OKEX) UpdateTicker(p pair.CurrencyPair, assetType string) (ticker.Price
 	var tickerPrice ticker.Price
 
 	if assetType != ticker.Spot {
-		if p.SecondCurrency.String() == common.StringToLower("USDT") {
-			p.SecondCurrency = "usd"
-			currency = exchange.FormatExchangeCurrency(o.Name, p).String()
-		}
 		tick, err := o.GetContractPrice(currency, assetType)
 		if err != nil {
 			return tickerPrice, err
@@ -54,11 +50,6 @@ func (o *OKEX) UpdateTicker(p pair.CurrencyPair, assetType string) (ticker.Price
 		tickerPrice.High = tick.Ticker.High
 		ticker.ProcessTicker(o.GetName(), p, tickerPrice, assetType)
 	} else {
-		if p.SecondCurrency.String() == common.StringToLower("USD") {
-			p.SecondCurrency = "usdt"
-			currency = exchange.FormatExchangeCurrency(o.Name, p).String()
-		}
-
 		tick, err := o.GetSpotTicker(currency)
 		if err != nil {
 			return tickerPrice, err
@@ -100,10 +91,6 @@ func (o *OKEX) UpdateOrderbook(p pair.CurrencyPair, assetType string) (orderbook
 	currency := exchange.FormatExchangeCurrency(o.Name, p).String()
 
 	if assetType != ticker.Spot {
-		if p.SecondCurrency.String() == common.StringToLower("USDT") {
-			p.SecondCurrency = "usd"
-			currency = exchange.FormatExchangeCurrency(o.Name, p).String()
-		}
 		orderbookNew, err := o.GetContractMarketDepth(currency, assetType)
 		if err != nil {
 			return orderBook, err
@@ -120,11 +107,6 @@ func (o *OKEX) UpdateOrderbook(p pair.CurrencyPair, assetType string) (orderbook
 		}
 
 	} else {
-		if p.SecondCurrency.String() == common.StringToLower("USD") {
-			p.SecondCurrency = "usdt"
-			currency = exchange.FormatExchangeCurrency(o.Name, p).String()
-		}
-
 		orderbookNew, err := o.GetSpotMarketDepth(ActualSpotDepthRequestParams{
 			Symbol: currency,
 			Size:   200,
@@ -217,4 +199,19 @@ func (o *OKEX) WithdrawFiatExchangeFunds(currency pair.CurrencyItem, amount floa
 // withdrawal is submitted
 func (o *OKEX) WithdrawFiatExchangeFundsToInternationalBank(currency pair.CurrencyItem, amount float64) (string, error) {
 	return "", errors.New("not yet implemented")
+}
+
+// GetWebsocket returns a pointer to the exchange websocket
+func (o *OKEX) GetWebsocket() (*exchange.Websocket, error) {
+	return o.Websocket, nil
+}
+
+// GetFeeByType returns an estimate of fee based on type of transaction
+func (o *OKEX) GetFeeByType(feeBuilder exchange.FeeBuilder) (float64, error) {
+	return o.GetFee(feeBuilder)
+}
+
+// GetWithdrawCapabilities returns the types of withdrawal methods permitted by the exchange
+func (o *OKEX) GetWithdrawCapabilities() uint32 {
+	return o.GetWithdrawPermissions()
 }

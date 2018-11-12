@@ -25,13 +25,9 @@ func (h *HUOBI) Start(wg *sync.WaitGroup) {
 // Run implements the HUOBI wrapper
 func (h *HUOBI) Run() {
 	if h.Verbose {
-		log.Printf("%s Websocket: %s (url: %s).\n", h.GetName(), common.IsEnabled(h.Websocket), huobiSocketIOAddress)
+		log.Printf("%s Websocket: %s (url: %s).\n", h.GetName(), common.IsEnabled(h.Websocket.IsEnabled()), huobiSocketIOAddress)
 		log.Printf("%s polling delay: %ds.\n", h.GetName(), h.RESTPollingDelay)
 		log.Printf("%s %d currencies enabled: %s.\n", h.GetName(), len(h.EnabledPairs), h.EnabledPairs)
-	}
-
-	if h.Websocket {
-		go h.WebsocketClient()
 	}
 
 	exchangeProducts, err := h.GetSymbols()
@@ -95,8 +91,15 @@ func (h *HUOBI) UpdateTicker(p pair.CurrencyPair, assetType string) (ticker.Pric
 	tickerPrice.Last = tick.Close
 	tickerPrice.Volume = tick.Volume
 	tickerPrice.High = tick.High
-	tickerPrice.Ask = tick.Ask[0]
-	tickerPrice.Bid = tick.Bid[0]
+
+	if len(tick.Ask) > 0 {
+		tickerPrice.Ask = tick.Ask[0]
+	}
+
+	if len(tick.Bid) > 0 {
+		tickerPrice.Bid = tick.Bid[0]
+	}
+
 	ticker.ProcessTicker(h.GetName(), p, tickerPrice, assetType)
 	return ticker.GetTicker(h.Name, p, assetType)
 }
@@ -214,4 +217,19 @@ func (h *HUOBI) WithdrawFiatExchangeFunds(currency pair.CurrencyItem, amount flo
 // withdrawal is submitted
 func (h *HUOBI) WithdrawFiatExchangeFundsToInternationalBank(currency pair.CurrencyItem, amount float64) (string, error) {
 	return "", errors.New("not yet implemented")
+}
+
+// GetWebsocket returns a pointer to the exchange websocket
+func (h *HUOBI) GetWebsocket() (*exchange.Websocket, error) {
+	return h.Websocket, nil
+}
+
+// GetFeeByType returns an estimate of fee based on type of transaction
+func (h *HUOBI) GetFeeByType(feeBuilder exchange.FeeBuilder) (float64, error) {
+	return h.GetFee(feeBuilder)
+}
+
+// GetWithdrawCapabilities returns the types of withdrawal methods permitted by the exchange
+func (h *HUOBI) GetWithdrawCapabilities() uint32 {
+	return h.GetWithdrawPermissions()
 }

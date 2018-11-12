@@ -24,7 +24,7 @@ func (b *Bithumb) Start(wg *sync.WaitGroup) {
 // Run implements the OKEX wrapper
 func (b *Bithumb) Run() {
 	if b.Verbose {
-		log.Printf("%s Websocket: %s. (url: %s).\n", b.GetName(), common.IsEnabled(b.Websocket), b.WebsocketURL)
+		log.Printf("%s Websocket: %s. (url: %s).\n", b.GetName(), common.IsEnabled(b.Websocket.IsEnabled()), b.WebsocketURL)
 		log.Printf("%s polling delay: %ds.\n", b.GetName(), b.RESTPollingDelay)
 		log.Printf("%s %d currencies enabled: %s.\n", b.GetName(), len(b.EnabledPairs), b.EnabledPairs)
 	}
@@ -64,7 +64,7 @@ func (b *Bithumb) UpdateTicker(p pair.CurrencyPair, assetType string) (ticker.Pr
 	}
 
 	for _, x := range b.GetEnabledCurrencies() {
-		currency := x.GetFirstCurrency().String()
+		currency := x.FirstCurrency.String()
 		var tp ticker.Price
 		tp.Pair = x
 		tp.Ask = tickers[currency].SellPrice
@@ -99,7 +99,7 @@ func (b *Bithumb) GetOrderbookEx(currency pair.CurrencyPair, assetType string) (
 // UpdateOrderbook updates and returns the orderbook for a currency pair
 func (b *Bithumb) UpdateOrderbook(p pair.CurrencyPair, assetType string) (orderbook.Base, error) {
 	var orderBook orderbook.Base
-	currency := p.GetFirstCurrency().String()
+	currency := p.FirstCurrency.String()
 
 	orderbookNew, err := b.GetOrderBook(currency)
 	if err != nil {
@@ -187,4 +187,19 @@ func (b *Bithumb) WithdrawFiatExchangeFunds(currency pair.CurrencyItem, amount f
 // withdrawal is submitted
 func (b *Bithumb) WithdrawFiatExchangeFundsToInternationalBank(currency pair.CurrencyItem, amount float64) (string, error) {
 	return "", errors.New("not yet implemented")
+}
+
+// GetWebsocket returns a pointer to the exchange websocket
+func (b *Bithumb) GetWebsocket() (*exchange.Websocket, error) {
+	return nil, errors.New("not yet implemented")
+}
+
+// GetFeeByType returns an estimate of fee based on type of transaction
+func (b *Bithumb) GetFeeByType(feeBuilder exchange.FeeBuilder) (float64, error) {
+	return b.GetFee(feeBuilder)
+}
+
+// GetWithdrawCapabilities returns the types of withdrawal methods permitted by the exchange
+func (b *Bithumb) GetWithdrawCapabilities() uint32 {
+	return b.GetWithdrawPermissions()
 }

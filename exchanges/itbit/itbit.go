@@ -11,6 +11,7 @@ import (
 
 	"github.com/thrasher-/gocryptotrader/common"
 	"github.com/thrasher-/gocryptotrader/config"
+	"github.com/thrasher-/gocryptotrader/currency/symbol"
 	"github.com/thrasher-/gocryptotrader/exchanges"
 	"github.com/thrasher-/gocryptotrader/exchanges/request"
 	"github.com/thrasher-/gocryptotrader/exchanges/ticker"
@@ -46,8 +47,8 @@ func (i *ItBit) SetDefaults() {
 	i.MakerFee = -0.10
 	i.TakerFee = 0.50
 	i.Verbose = false
-	i.Websocket = false
 	i.RESTPollingDelay = 10
+	i.APIWithdrawPermissions = exchange.WithdrawCryptoViaWebsiteOnly | exchange.WithdrawFiatViaWebsiteOnly
 	i.RequestCurrencyPairFormat.Delimiter = ""
 	i.RequestCurrencyPairFormat.Uppercase = true
 	i.ConfigCurrencyPairFormat.Delimiter = ""
@@ -55,7 +56,13 @@ func (i *ItBit) SetDefaults() {
 	i.AssetTypes = []string{ticker.Spot}
 	i.SupportsAutoPairUpdating = false
 	i.SupportsRESTTickerBatching = false
-	i.Requester = request.New(i.Name, request.NewRateLimit(time.Second, itbitAuthRate), request.NewRateLimit(time.Second, itbitUnauthRate), common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
+	i.Requester = request.New(i.Name,
+		request.NewRateLimit(time.Second, itbitAuthRate),
+		request.NewRateLimit(time.Second, itbitUnauthRate),
+		common.NewHTTPClientWithTimeout(exchange.DefaultHTTPTimeout))
+	i.APIUrlDefault = itbitAPIURL
+	i.APIUrl = i.APIUrlDefault
+	i.WebsocketInit()
 }
 
 // Setup sets the exchange parameters from exchange config
@@ -70,7 +77,6 @@ func (i *ItBit) Setup(exch config.ExchangeConfig) {
 		i.SetHTTPClientUserAgent(exch.HTTPUserAgent)
 		i.RESTPollingDelay = exch.RESTPollingDelay
 		i.Verbose = exch.Verbose
-		i.Websocket = exch.Websocket
 		i.BaseCurrencies = common.SplitStrings(exch.BaseCurrencies, ",")
 		i.AvailablePairs = common.SplitStrings(exch.AvailablePairs, ",")
 		i.EnabledPairs = common.SplitStrings(exch.EnabledPairs, ",")
@@ -86,22 +92,22 @@ func (i *ItBit) Setup(exch config.ExchangeConfig) {
 		if err != nil {
 			log.Fatal(err)
 		}
+		err = i.SetAPIURL(exch)
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = i.SetClientProxyAddress(exch.ProxyAddress)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
-}
-
-// GetFee returns the maker or taker fee
-func (i *ItBit) GetFee(maker bool) float64 {
-	if maker {
-		return i.MakerFee
-	}
-	return i.TakerFee
 }
 
 // GetTicker returns ticker info for a specified market.
 // currencyPair - example "XBTUSD" "XBTSGD" "XBTEUR"
 func (i *ItBit) GetTicker(currencyPair string) (Ticker, error) {
 	var response Ticker
-	path := fmt.Sprintf("%s/%s/%s/%s", itbitAPIURL, itbitMarkets, currencyPair, itbitTicker)
+	path := fmt.Sprintf("%s/%s/%s/%s", i.APIUrl, itbitMarkets, currencyPair, itbitTicker)
 
 	return response, i.SendHTTPRequest(path, &response)
 }
@@ -110,7 +116,7 @@ func (i *ItBit) GetTicker(currencyPair string) (Ticker, error) {
 // currencyPair - example "XBTUSD" "XBTSGD" "XBTEUR"
 func (i *ItBit) GetOrderbook(currencyPair string) (OrderbookResponse, error) {
 	response := OrderbookResponse{}
-	path := fmt.Sprintf("%s/%s/%s/%s", itbitAPIURL, itbitMarkets, currencyPair, itbitOrderbook)
+	path := fmt.Sprintf("%s/%s/%s/%s", i.APIUrl, itbitMarkets, currencyPair, itbitOrderbook)
 
 	return response, i.SendHTTPRequest(path, &response)
 }
@@ -122,7 +128,7 @@ func (i *ItBit) GetOrderbook(currencyPair string) (OrderbookResponse, error) {
 func (i *ItBit) GetTradeHistory(currencyPair, timestamp string) (Trades, error) {
 	response := Trades{}
 	req := "trades?since=" + timestamp
-	path := fmt.Sprintf("%s/%s/%s/%s", itbitAPIURL, itbitMarkets, currencyPair, req)
+	path := fmt.Sprintf("%s/%s/%s/%s", i.APIUrl, itbitMarkets, currencyPair, req)
 
 	return response, i.SendHTTPRequest(path, &response)
 }
@@ -321,7 +327,7 @@ func (i *ItBit) SendAuthenticatedHTTPRequest(method string, path string, params 
 	}
 
 	request := make(map[string]interface{})
-	url := itbitAPIURL + path
+	url := i.APIUrl + path
 
 	if params != nil {
 		for key, value := range params {
@@ -363,4 +369,41 @@ func (i *ItBit) SendAuthenticatedHTTPRequest(method string, path string, params 
 	headers["Content-Type"] = "application/json"
 
 	return i.SendPayload(method, url, headers, bytes.NewBuffer([]byte(PayloadJSON)), result, true, i.Verbose)
+}
+
+// GetFee returns an estimate of fee based on type of transaction
+func (i *ItBit) GetFee(feeBuilder exchange.FeeBuilder) (float64, error) {
+	var fee float64
+	switch feeBuilder.FeeType {
+	case exchange.CryptocurrencyTradeFee:
+		fee = calculateTradingFee(feeBuilder.PurchasePrice, feeBuilder.Amount, feeBuilder.IsMaker)
+	case exchange.InternationalBankWithdrawalFee:
+		fee = getInternationalBankWithdrawalFee(feeBuilder.CurrencyItem, feeBuilder.Amount, feeBuilder.BankTransactionType)
+	}
+
+	if fee < 0 {
+		fee = 0
+	}
+
+	return fee, nil
+}
+
+func calculateTradingFee(purchasePrice, amount float64, isMaker bool) float64 {
+	// TODO: Itbit has volume discounts, but not API endpoint to get the exact volume numbers
+	// When support is added, this needs to be updated to calculate the accurate volume fee
+	feePercent := 0.0025
+	if isMaker {
+		feePercent = 0
+	}
+	return feePercent * purchasePrice * amount
+}
+
+func getInternationalBankWithdrawalFee(currency string, amount float64, bankTransactionType exchange.InternationalBankTransactionType) float64 {
+	var fee float64
+	if (bankTransactionType == exchange.Swift || bankTransactionType == exchange.WireTransfer) && currency == symbol.USD {
+		fee = 40
+	} else if (bankTransactionType == exchange.SEPA || bankTransactionType == exchange.WireTransfer) && currency == symbol.EUR {
+		fee = 1
+	}
+	return fee
 }
